@@ -1,0 +1,43 @@
+diff --git a/source/blender/editors/screen/screen_edit.cc b/source/blender/editors/screen/screen_edit.cc
+index 8e5bdce..7094774 100644
+--- a/source/blender/editors/screen/screen_edit.cc
++++ b/source/blender/editors/screen/screen_edit.cc
+@@ -7,6 +7,7 @@
+  */
+ 
+ #include <cmath>
++#include <cstdlib>
+ #include <cstring>
+ #include <limits>
+ 
+@@ -1338,6 +1339,30 @@ void ED_screen_global_areas_refresh(wmWindow *win)
+     return;
+   }
+ 
++  /* WEB BUILD -- see blender/LOCAL_CHANGES.md.
++   *
++   * The top bar and the status bar are "global areas": screen_global_area_refresh()
++   * builds the top bar with size_min == size_max == screen_global_header_size(),
++   * a FIXED height with no collapse path, so unregistering its Python header only
++   * empties it -- the strip stays and the editors below cannot grow into it. This
++   * browser build wants the 3D view against the window edge, so the bars are not
++   * created at all and the main screen gets the whole window.
++   *
++   * Freeing them here mirrors what the child/temporary-window branch above already
++   * does, which is also why the rest of the code copes with their absence: every
++   * consumer iterates win->global_areas.areabase, and child windows never have any.
++   *
++   * Escape hatch, no rebuild required: run with BLENDER_WEB_GLOBAL_BARS=1 (the demo
++   * forwards window.__CAPENV to the environment) to get stock Blender behaviour. */
++  static const bool hide_global_bars = (getenv("BLENDER_WEB_GLOBAL_BARS") == nullptr);
++  if (hide_global_bars) {
++    if (win->global_areas.areabase.first) {
++      screen->do_refresh = true;
++      BKE_screen_area_map_free(&win->global_areas);
++    }
++    return;
++  }
++
+   screen_global_topbar_area_refresh(win, screen);
+   screen_global_statusbar_area_refresh(win, screen);
+ }

@@ -38,12 +38,28 @@ mkdir -p "$DL" "$SRC" "$BLD" "$SYSROOT"
 # output must not pollute that captured value.
 log() { echo ">> [$(basename "${0%.sh}")] $*" >&2; }
 
-# fetch_extract <url> <tarball-name> <expected-extracted-dirname>
+# fetch_extract <url> <tarball-name> <expected-extracted-dirname> [mirror...]
+#
+# Extra arguments are fallback URLs, tried in order. Upstream release hosts do
+# go down -- savannah.gnu.org served freetype a stretch of HTTP 502 -- and a
+# single dead host should not throw away an hours-long build.
 fetch_extract() {
   local url="$1" file="$2" dir="$3"
+  shift 3
   if [ ! -f "$DL/$file" ]; then
     log "downloading $file"
-    curl -fL --retry 3 -o "$DL/$file.tmp" "$url"
+    local got=0 u
+    for u in "$url" "$@"; do
+      if curl -fL --retry 3 --connect-timeout 20 -o "$DL/$file.tmp" "$u"; then
+        got=1
+        break
+      fi
+      log "source failed, trying next mirror: $u"
+    done
+    if [ "$got" != 1 ]; then
+      log "ERROR: no source worked for $file"
+      return 1
+    fi
     mv "$DL/$file.tmp" "$DL/$file"
   fi
   if [ ! -d "$SRC/$dir" ]; then

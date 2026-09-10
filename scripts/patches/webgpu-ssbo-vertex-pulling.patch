@@ -1,0 +1,25 @@
+diff --git a/source/blender/gpu/webgpu/webgpu_shader_interface.cc b/source/blender/gpu/webgpu/webgpu_shader_interface.cc
+index 279a058..b9713a0 100644
+--- a/source/blender/gpu/webgpu/webgpu_shader_interface.cc
++++ b/source/blender/gpu/webgpu/webgpu_shader_interface.cc
+@@ -237,6 +237,20 @@ void WebGPUShaderInterface::init(const shader::ShaderCreateInfo &info)
+     }
+   }
+ 
++  /* Geometry-frequency storage buffers are the SSBO vertex-pulling attributes
++   * (gpu_index_buf, gpu_attr_N). GPU_batch_bind_as_resources() early-returns
++   * when this mask is 0, so leaving it unset -- as this backend did -- meant
++   * those buffers were NEVER bound: the bind group then came out incomplete
++   * and EVERY vertex-pulled draw was silently skipped. That is edit-mesh edges
++   * and vertices, and every gpu_shader_3D_polyline_* overlay. The OpenGL and
++   * Vulkan interfaces build the same mask (gl_shader_interface.cc,
++   * vk_shader_interface.cc). */
++  for (const ShaderCreateInfo::Resource &res : info.geometry_resources_) {
++    if (res.bind_type == ShaderCreateInfo::Resource::BindType::STORAGE_BUFFER) {
++      ssbo_attr_mask_ |= (1 << res.slot);
++    }
++  }
++
+   /* --- Specialization constants --- */
+   int constant_id = 0;
+   for (const SpecializationConstant &constant : info.specialization_constants_) {

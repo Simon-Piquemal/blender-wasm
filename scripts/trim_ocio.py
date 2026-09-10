@@ -11,6 +11,8 @@ import re
 import sys
 
 d = sys.argv[1]
+# Set to False to keep the AgX/Filmic views and their ~7.8 MB of LUTs.
+DROP_AGX_FILMIC = True
 cfg = d + "/config.ocio"
 lines = open(cfg).read().splitlines(True)
 out = []
@@ -40,6 +42,52 @@ while i < len(lines):
     out.append(l)
     i += 1
 open(cfg, "w").write("".join(out))
-for f in ("pbrNeutral.cube", "AgX_Base_P3.cube", "AgX_Rec2100-HLG_p3_lim.cube"):
-    os.remove(d + "/luts/" + f)
-print("OCIO trimmed")
+# Idempotent on purpose: the config rewrite above is a no-op on an already
+# trimmed tree, so the lut removal must not explode either. The count is
+# printed so a silent upstream rename shows up as "0 of 3" instead of nothing.
+removed = 0
+luts = ("pbrNeutral.cube", "AgX_Base_P3.cube", "AgX_Rec2100-HLG_p3_lim.cube")
+for f in luts:
+    path = d + "/luts/" + f
+    if os.path.exists(path):
+        os.remove(path)
+        removed += 1
+print("OCIO trimmed ({} of {} display luts removed)".format(removed, len(luts)))
+
+# --- drop the AgX and Filmic view transforms -------------------------------
+# ~7.8 MB of LUTs for four views this build never offers. The colorspace and
+# view_transform DEFINITIONS stay on purpose: OCIO resolves a FileTransform
+# lazily, when a processor is built, so a definition nobody selects never
+# touches its (now absent) file. Removing the *views* is what makes them
+# unselectable. Blender's startup file asks for AgX, so webapp_ui.py forces the
+# scene back to Standard -- without that the scene would name a view that no
+# longer exists.
+if DROP_AGX_FILMIC:
+    drop_views = {"AgX", "Filmic", "Filmic Log", "False Color"}
+    kept = []
+    view_re = re.compile(r"^    - !<View> \{name: ([^,]+),")
+    for line in open(cfg).read().splitlines(True):
+        m = view_re.match(line)
+        if m and m.group(1) in drop_views:
+            continue
+        if line.startswith("active_views:"):
+            line = "active_views: [Standard, ACES 1.3, ACES 2.0, Raw]" + chr(10)
+        kept.append(line)
+    open(cfg, "w").write("".join(kept))
+    gone = 0
+    for f in ("luts/AgX_Base_Rec2020.cube", "luts/AgX_Base_sRGB.cube",
+              "luts/AgX_False_Color.spi1d",
+              "luts/luminance_compensation_bt2020.cube",
+              "filmic/filmic_desat_33.cube"):
+        path = d + "/" + f
+        if os.path.exists(path):
+            os.remove(path)
+            gone += 1
+    fdir = d + "/filmic"
+    if os.path.isdir(fdir):
+        for f in os.listdir(fdir):
+            if f.startswith("filmic_to_"):
+                os.remove(fdir + "/" + f)
+                gone += 1
+    print("OCIO: AgX + Filmic views dropped ({} lut files removed)".format(gone))
+

@@ -11,6 +11,14 @@ set(WITH_LIBS_PRECOMPILED    OFF CACHE BOOL "")
 set(WITH_STRICT_BUILD_OPTIONS OFF CACHE BOOL "")
 
 # --- our cross-compiled CPython 3.13 in the wasm sysroot -------------------
+# The codegen steps (generate_datamodels.cmake, blenkernel, nodes) shell out to
+# ${PYTHON_EXECUTABLE}. Emscripten's toolchain points find_program at the wasm
+# sysroot, which has no interpreter, so the variable resolved to
+# PYTHON_EXECUTABLE-NOTFOUND and ninja died with "PYTHON_EXECUTABLE-NOTFOUND:
+# not found". Point it at the native build-python that scripts/build_python.sh
+# already compiled to drive the CPython cross-build -- same 3.13 series as
+# PYTHON_VERSION below, so codegen runs on the version it is generating for.
+set(PYTHON_EXECUTABLE    "${CMAKE_SOURCE_DIR}/../deps/build/python-native/python" CACHE FILEPATH "")
 set(PYTHON_VERSION       "3.13" CACHE STRING "")
 set(PYTHON_INCLUDE_DIR   "${CMAKE_SOURCE_DIR}/../wasm-sysroot/include/python3.13" CACHE PATH "")
 set(PYTHON_INCLUDE_DIRS  "${CMAKE_SOURCE_DIR}/../wasm-sysroot/include/python3.13" CACHE PATH "")
@@ -40,9 +48,12 @@ set(WITH_FRIBIDI            OFF CACHE BOOL "")
 # --- trim heavy/irrelevant features to reach codegen fast ------------------
 set(WITH_CYCLES              OFF CACHE BOOL "")
 set(WITH_OPENVDB             OFF CACHE BOOL "")
-set(WITH_OPENSUBDIV          OFF CACHE BOOL "")
-set(WITH_OPENCOLORIO         OFF CACHE BOOL "")
-set(WITH_OPENIMAGEIO         ON  CACHE BOOL "")
+# WITH_OPENSUBDIV lives with the KEPT ON PURPOSE block below (it is ON).
+# NOTE: WITH_OPENCOLORIO / WITH_OPENIMAGEIO / WITH_COMPOSITOR_CPU are no
+# longer CMake options in Blender 5.x (both libs are always built, the
+# compositor is GPU-only), so setting them here was a no-op. OCIO being
+# unconditional is why datafiles/colormanagement must still ship -- see
+# scripts/trim_ocio.py for the diet it gets instead.
 set(WITH_TBB                 ON  CACHE BOOL "")
 set(WITH_TBB_MALLOC_PROXY    OFF CACHE BOOL "")
 set(WITH_LIBMV               OFF CACHE BOOL "")
@@ -65,12 +76,68 @@ set(WITH_MANIFOLD            OFF CACHE BOOL "")
 set(WITH_QUADRIFLOW          OFF CACHE BOOL "")
 set(WITH_INPUT_NDOF          OFF CACHE BOOL "")
 set(WITH_BULLET              OFF CACHE BOOL "")
-set(WITH_COMPOSITOR_CPU      OFF CACHE BOOL "")
 set(WITH_XR_OPENXR           OFF CACHE BOOL "")
 set(WITH_ALEMBIC             OFF CACHE BOOL "")
 set(WITH_USD                 OFF CACHE BOOL "")
 set(WITH_HYDRA               OFF CACHE BOOL "")
 set(WITH_MATERIALX           OFF CACHE BOOL "")
+
+# --- second pass: heavy features still ON by default upstream ---------------
+# Each of these compiles a sizeable chunk of C++ into the module for something
+# a browser session cannot or will not use. Cost of re-enabling: flip to ON.
+set(WITH_FREESTYLE           OFF CACHE BOOL "")  # NPR line renderer: whole
+                                                 # intern/freestyle tree + its
+                                                 # Python API, and it only runs
+                                                 # under a CPU render pipeline
+                                                 # we do not ship (no Cycles).
+set(WITH_IK_ITASC            OFF CACHE BOOL "")  # alternative armature IK
+                                                 # solver (Eigen-heavy); the
+                                                 # default IK solver stays via
+                                                 # WITH_IK_SOLVER.
+set(WITH_IO_FBX              ON  CACHE BOOL "")  # C++ FBX importer (ufbx).
+                                                 # ON because the Python FBX
+                                                 # add-on cannot run here: it
+                                                 # imports numpy, which this
+                                                 # CPython does not have. ufbx
+                                                 # is self-contained C++ with no
+                                                 # such dependency, so it is the
+                                                 # only way .fbx opens at all in
+                                                 # the browser build. Import
+                                                 # only -- there is no C++ FBX
+                                                 # writer upstream.
+set(WITH_IO_GREASE_PENCIL    OFF CACHE BOOL "")  # GP SVG/PDF IO; the PDF half
+                                                 # was already dead (WITH_HARU
+                                                 # is OFF).
+set(WITH_IMAGE_CINEON        OFF CACHE BOOL "")  # DPX/Cineon film scans.
+set(WITH_IMAGE_WEBP          OFF CACHE BOOL "")  # no libwebp in the sysroot.
+# Auto-disabled by dependency rules, listed for the record: WITH_MOD_OCEANSIM
+# and WITH_RUBBERBAND follow WITH_FFTW3=OFF, WITH_NANOVDB follows WITH_OPENVDB.
+
+# KEPT ON PURPOSE (modelling tools the demo is actually for), even though both
+# cost real module size:
+#   WITH_MOD_REMESH  Remesh modifier -- Blocks/Smooth/Sharp modes work; the
+#                    Voxel mode needs OpenVDB, which stays OFF.
+#   WITH_UV_SLIM     "Minimum Stretch" unwrap (Eigen sparse solvers).
+#   WITH_OPENSUBDIV  Subsurf/Multires modifiers + the Subdivision Surface
+#                    geometry node -- see the block right below.
+# Note WITH_QUADRIFLOW (Object > Quad Remesh) was already OFF before this file's
+# size pass -- flip it ON if real quad remeshing matters more than the download.
+
+# --- OpenSubdiv (CPU only) --------------------------------------------------
+# Was OFF, which made the Subsurf modifier a no-op reporting "disabled build
+# without opensubdiv": every subdivided scene rendered as its base cage. Set
+# explicitly (upstream default is ON) so the intent is on the record.
+# scripts/build_opensubdiv.sh stages osdCPU (v3_7_0, the version Blender 5.3
+# pins) in the sysroot; OpenSubdiv's own GPU evaluators are off -- GPU
+# subdivision goes through Blender's bf::gpu compute path (WebGPU) instead.
+set(WITH_OPENSUBDIV          ON  CACHE BOOL "")
+# build_files/cmake/Modules/FindOpenSubdiv.cmake is a hand-rolled module whose
+# only HINTS are OPENSUBDIV_ROOT_DIR and two /opt/lib paths. CMAKE_PREFIX_PATH
+# covers the sysroot anyway, but be explicit so a stray /opt/lib/opensubdiv on a
+# dev box can never win. It resolves TWO components, osdGPU and osdCPU: the
+# GPU-less build stages an empty libosdGPU.a for that lookup to land on (see
+# scripts/build_opensubdiv.sh).
+set(OPENSUBDIV_ROOT_DIR "${CMAKE_SOURCE_DIR}/../wasm-sysroot" CACHE PATH "")
 
 # emscripten ships arm_neon.h emulation → Blender's NEON probe misfires.
 set(SUPPORTS_NEON_BUILD      FALSE CACHE INTERNAL "")

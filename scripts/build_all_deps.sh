@@ -34,8 +34,9 @@ wave() {  # wave <name> <script...>
 
 # Wave 1: no inter-deps.
 wave foundational zlib fmt imath zstd jpeg libdeflate robinmap yamlcpp expat pystring tbb eigen pugixml brotli
-# Wave 2: depend on wave 1.
-wave mid png minizip openjph tiff
+# Wave 2: depend on wave 1. (opensubdiv needs tbb: NO_TBB=OFF pulls
+# TBBConfig.cmake out of the sysroot for its parallel evaluator kernels.)
+wave mid png minizip openjph tiff opensubdiv
 # Wave 3: FreeType (zlib + png + brotli). Blender's find_package(Freetype) is
 # REQUIRED, so this must be in the sysroot before configure.
 wave text freetype
@@ -54,6 +55,16 @@ wave oiio oiio
 wave tint    tint
 wave spirv   spirv_tools
 wave shaderc shaderc
+
+# --- numpy -> libnumpy.a + site-packages ------------------------------------
+# Last, because it cross-compiles against the CPython already in the sysroot and
+# then recompiles its objects without -fPIC for the static link. It is what makes
+# the glTF and FBX add-ons runnable at all; skip it and both report themselves
+# unavailable rather than failing halfway. NUMPY_SKIP=1 opts out.
+if [ -z "${NUMPY_SKIP:-}" ]; then
+  bash scripts/build_numpy.sh
+  bash scripts/package_numpy.sh
+fi
 
 echo "==== all deps built into wasm-sysroot ===="
 ls -1 wasm-sysroot/lib/*.a

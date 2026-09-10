@@ -25,20 +25,10 @@ rm -rf "$STAGE"; mkdir -p "$STAGE/5.3"
 cp -r "$ROOT/blender/scripts"          "$STAGE/5.3/scripts"
 cp -r "$ROOT/blender/release/datafiles" "$STAGE/5.3/datafiles"
 cp -r "$SYSROOT/lib/python3.13" "$STAGE/python3.13"
-# Trim weight not needed at runtime (tests, caches, dev-only modules).
-( cd "$STAGE/python3.13" && rm -rf test tests idlelib lib2to3 turtledemo tkinter \
-    config-3.13-wasm32-emscripten ensurepip \
-    && find . -name '__pycache__' -type d -prune -exec rm -rf {} + )
-# config-3.13-*/: build artifacts incl. a 41MB libpython3.13.a never read at
-# runtime; ensurepip: bundled pip wheel (no pip on wasm). splash_template.xcf
-# is a GIMP source file shipped by accident upstream.
-rm -f "$STAGE/5.3/datafiles/splash_template.xcf"
-# OCIO diet: a browser canvas is an sRGB display — drop the P3/Rec.2020/
-# Rec.2100 display definitions and their (multi-MB) AgX cubes, plus the
-# niche Khronos PBR Neutral view. AgX_Base_Rec2020.cube STAYS: the kept
-# False Color view transform samples it. config.ocio is patched in staging
-# only (source tree untouched).
-python3 "$ROOT/scripts/trim_ocio.py" "$STAGE/5.3/datafiles/colormanagement"
+# Shared staging diet: drops what this build cannot use (fonts for scripts the
+# UI never renders, addons for features compiled out, CPython dev modules) and
+# puts the OCIO config on the sRGB-only diet. See scripts/trim_assets.sh.
+bash "$ROOT/scripts/trim_assets.sh" "$STAGE/5.3" "$STAGE/python3.13"
 echo ">>   scripts=$(du -shL "$STAGE/5.3/scripts"|cut -f1) datafiles=$(du -shL "$STAGE/5.3/datafiles"|cut -f1) py=$(du -sh "$STAGE/python3.13"|cut -f1)"
 
 # --- grab CMake's exact link command for the `blender` target ---------------

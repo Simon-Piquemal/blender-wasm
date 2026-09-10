@@ -9,6 +9,30 @@ PYSRC=$(fetch_extract \
   "https://www.python.org/ftp/python/3.13.13/Python-3.13.13.tar.xz" \
   "Python-3.13.13.tar.xz" "Python-3.13.13")
 
+# CPython bundles its own expat and renames EVERY expat symbol through
+# Modules/expat/pyexpatns.h, so libpython can sit next to a system expat. That
+# rename list lags upstream expat: 3.13.13 covers 90 symbols but misses two
+# newer internals, and linking libpython3.13.a beside our libexpat.a (which
+# OpenColorIO pulls in) then dies with
+#   wasm-ld: error: duplicate symbol: g_reparseDeferralEnabledDefault
+#   wasm-ld: error: duplicate symbol: _INTERNAL_trim_to_complete_utf8_characters
+# Add the missing renames. Idempotent, and a CPython bump that fixes the list
+# upstream makes this a no-op instead of a conflict.
+PYEXPATNS="$PYSRC/Modules/expat/pyexpatns.h"
+if [ -f "$PYEXPATNS" ] && ! grep -q "g_reparseDeferralEnabledDefault" "$PYEXPATNS"; then
+  log "patching pyexpatns.h: 2 missing expat symbol renames"
+  # Rewrite rather than sed: the guard line contains /* */ and the insert is
+  # multi-line, which makes an in-place sed expression a quoting minefield.
+  {
+    grep -vF '#endif /* !PYEXPATNS_H */' "$PYEXPATNS"
+    echo '#define g_reparseDeferralEnabledDefault PyExpat_g_reparseDeferralEnabledDefault'
+    echo '#define _INTERNAL_trim_to_complete_utf8_characters PyExpat__INTERNAL_trim_to_complete_utf8_characters'
+    echo
+    echo '#endif /* !PYEXPATNS_H */'
+  } > "$PYEXPATNS.new" && mv "$PYEXPATNS.new" "$PYEXPATNS"
+  grep -c "^#define" "$PYEXPATNS" | sed "s|^|>> [build_python] pyexpatns renames now: |"
+fi
+
 # 1) Native build-python (host interpreter used by the cross-build).
 NATIVE="$BLD/python-native"
 # Must be a COMPLETE build (incl. extension modules like binascii) — the wasm

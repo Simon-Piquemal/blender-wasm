@@ -246,10 +246,11 @@ function makeAssetProvider(index) {
 /* ---- GPU capability gate ------------------------------------------------
  * Probe the WebGPU adapter EARLY (concurrent with the download; no user
  * activation needed) so the user learns about a missing/software renderer
- * before waiting for ~50 MB. If WebGPU is absent the Launch button stays
- * disabled; if it falls back to a software renderer (SwiftShader / llvmpipe /
- * Dawn fallback) the button is greyed out until the user ticks an
- * acknowledgement checkbox. A real GPU shows nothing and launches normally. */
+ * before waiting on the full engine+asset download. If WebGPU is absent the
+ * Launch button stays disabled; if it falls back to a software renderer
+ * (SwiftShader / llvmpipe / Dawn fallback) the button is greyed out until the
+ * user ticks an acknowledgement checkbox. A real GPU shows nothing and
+ * launches normally. */
 let assetsReady = false;
 let gpuStatus = null; /* { ok, software, fatal, desc, message } once resolved */
 
@@ -364,10 +365,22 @@ const scan = (t) => {
   }
 };
 const canvas = document.getElementById("canvas");
+/* Size the canvas ONCE, before Blender takes it. After
+ * transferControlToOffscreen() the backing store belongs to the render worker
+ * and any assignment here throws InvalidStateError -- which is exactly what
+ * this listener did on every window resize, uncaught. Blender owns resizing
+ * from then on: GHOST_SystemWeb installs its own resize callback and calls
+ * emscripten_set_canvas_element_size from the thread that owns the canvas. */
+let canvasIsOffscreen = false;
 const fitCanvas = () => {
-  if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+  if (canvasIsOffscreen) return;
+  try {
+    if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+  } catch (e) {
+    canvasIsOffscreen = true;
   }
 };
 fitCanvas();
@@ -772,6 +785,24 @@ window.Module = {
       ENV.BLENDER_SYSTEM_PYTHON = "/assets";
       ENV.PYTHONHOME = "/assets";
       if (window.__CAPENV) for (const k in window.__CAPENV) ENV[k] = window.__CAPENV[k];
+      /* Env from the URL: ?env=BLENDER_WEB_MCP=1, repeatable. This is how a
+       * session turns on an optional brick -- the MCP mailbox above all -- with
+       * no rebuild and no devtools hook, which is also what makes it testable.
+       * Restricted to these three prefixes on purpose: a link is something one
+       * person can send another, and it has no business setting arbitrary
+       * process environment in someone else's tab. Applied after __CAPENV so a
+       * URL can override an embedder's default. */
+      for (const pair of new URLSearchParams(location.search).getAll("env")) {
+        const eq = pair.indexOf("=");
+        if (eq < 1) continue;
+        const key = pair.slice(0, eq);
+        if (!/^(BLENDER_WEB_|WGPU_|IMB_)[A-Z0-9_]*$/.test(key)) {
+          log("env ignored, prefix not allowed: " + key);
+          continue;
+        }
+        ENV[key] = pair.slice(eq + 1);
+        log("env " + key + "=" + ENV[key]);
+      }
     } catch (e) { log("preRun ENV: " + e); }
 
     /* Register the in-memory tar FsProvider for the WasmFS ProviderBackend
@@ -789,11 +820,18 @@ window.Module = {
         const rq = db.transaction("wgsl").objectStore("wgsl").getAll();
         rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error);
       });
+      /* Shipped seed. Kept as PLAIN json on purpose: the thread that actually
+       * uses it is a pthread worker (-sPROXY_TO_PTHREAD), which reads it with a
+       * synchronous XHR from demo/wgsl_cache_worker.js -- and there is no
+       * synchronous way to unzstd there. Transport compression does the job
+       * instead (2.5 MB -> ~0.4 MB gzipped by any static host). This
+       * main-thread copy only serves a non-proxied build (the dev link). */
       let seed = [];
       try {
         const rsp = await fetch("wgsl-cache.json");
         if (rsp.ok) seed = await rsp.json();
-      } catch (e) {}
+      } catch (e) { log("wgsl seed: " + e); }
+      if (seed.length === 0) log("wgsl seed MISSING - shaders will translate at runtime");
       globalThis.__WGSL_CACHE__ = new Map([...seed, ...rows.map((r) => [r.key, r.wgsl])]);
       globalThis.__WGSL_CACHE_PUT__ = (k, v) => {
         try { db.transaction("wgsl", "readwrite").objectStore("wgsl").put({ key: k, wgsl: v }); }

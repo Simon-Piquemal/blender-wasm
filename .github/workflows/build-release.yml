@@ -90,10 +90,20 @@ jobs:
           # native shader codegen tool (scripts/build_shader_tool_native.sh).
           # cmake/ninja drive the wasm dep + Blender configure; the rest are
           # commonly needed by the autotools-based deps.
+          #
+          # The -dev packages on the last two lines are for the NATIVE
+          # build-python that scripts/build_python.sh compiles to drive the
+          # CPython cross-build. Without zlib1g-dev that interpreter has no
+          # zlib module and `make install` dies in Tools/wasm/wasm_assets.py
+          # with "Compression requires the (missing) zlib module". The GitHub
+          # runner image preinstalls them, so this only bites on a leaner
+          # machine -- it did, on a WSL Ubuntu.
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build python3 python3-venv pkg-config \
             git wget curl zstd rsync patch autoconf automake libtool bison flex \
-            gettext unzip ca-certificates
+            gettext unzip ca-certificates \
+            zlib1g-dev libbz2-dev liblzma-dev libssl-dev libffi-dev \
+            libsqlite3-dev libreadline-dev libncurses-dev libgdbm-dev uuid-dev
 
       - name: Set up Node
         uses: actions/setup-node@v4

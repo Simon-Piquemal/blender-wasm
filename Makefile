@@ -72,43 +72,33 @@ print-env:
 	@echo "EMSDK=$(EMSDK)"; "$(EMCC)" --version | head -1
 
 # ---------------------------------------------------------------------------
-# Blender source (pinned fork ref).
+# Blender source. VENDORED, not cloned: blender/ is a trimmed snapshot of the
+# fork committed to this repository, so it can be edited in place -- cutting
+# features and changing behaviour in the source itself, not only through the
+# CMake WITH_* flags. BLENDER_URL / BLENDER_REF above are what
+# scripts/vendor_blender.sh uses to move that snapshot to a newer ref; a normal
+# build no longer touches the network for source at all.
 # ---------------------------------------------------------------------------
-blender: blender/.git
-blender/.git:
-	git init -q blender
-	git -C blender remote add origin $(BLENDER_URL) 2>/dev/null || true
-	GIT_LFS_SKIP_SMUDGE=1 git -C blender fetch --depth 1 origin $(BLENDER_REF)
-	# Skip LFS smudge on checkout: the fork's GitHub LFS storage does NOT host the
-	# LFS objects (forks don't inherit LFS), so smudging every pointer 404s and
-	# aborts the checkout. Check out pointers; the real objects are pulled from
-	# upstream by content hash in `blender-assets` below.
-	GIT_LFS_SKIP_SMUDGE=1 git -C blender checkout -q --detach FETCH_HEAD
-	@echo ">> blender at $$(git -C blender rev-parse --short HEAD)"
+blender:
+	@test -f blender/CMakeLists.txt || { echo '!! blender/ source tree is missing -- run: bash scripts/vendor_blender.sh'; exit 1; }
+	@echo ">> blender: vendored tree @ $$(cut -c1-12 blender/.vendored-ref 2>/dev/null || echo unknown)"
 
-# Git-LFS datafiles (startup.blend, fonts, icons, colormanagement, studiolights)
-# needed by the FULL Blender build. The GitHub fork's LFS storage does NOT host
-# them (all objects 404), so pull from upstream projects.blender.org — which
-# DOES serve them anonymously, but ONLY if we tell git-lfs the endpoint needs no
-# auth via `lfs.<url>.access none`. Without that, git-lfs demands credentials
-# and fails in CI (this was the missing piece). The checkout above skips smudge,
-# so the pointers are materialized here.
-# (The essentials `assets/brushes/**` blends are vendored in-repo — demo/brush-
-# assets/ — and bundled by scripts/link_blender_release.sh, so they need no LFS.)
-BLENDER_LFS_URL := https://projects.blender.org/blender/blender.git/info/lfs
+# Runtime datafiles (startup.blend, fonts, icons, colormanagement, studiolights).
+# These used to be pulled from upstream git-LFS at build time: the fork's own LFS
+# storage 404s, so it needed an anonymous-access override against
+# projects.blender.org, and a runner with no credentials was one config change
+# away from failing. They are resolved once and vendored now
+# (scripts/fetch_lfs_datafiles.sh), so this only guards against a pointer stub
+# slipping through, which would ship 130-byte files in place of real datafiles.
 blender-assets: blender
-	cd blender && git lfs install --local 2>/dev/null || true
-	cd blender && git config lfs.url "$(BLENDER_LFS_URL)"
-	cd blender && git config "lfs.$(BLENDER_LFS_URL).access" none
-	cd blender && GIT_TERMINAL_PROMPT=0 git lfs pull --include="release/datafiles/**"
-	@echo ">> release/datafiles LFS pulled ($$(du -sh blender/release/datafiles | cut -f1))"
-
+	@if grep -rqs '^version https://git-lfs' blender/release/datafiles; then echo '!! unresolved LFS pointers -- run: bash scripts/fetch_lfs_datafiles.sh blender'; exit 1; fi
+	@echo ">> release/datafiles ok ($$(du -shL blender/release/datafiles | cut -f1))"
 # ---------------------------------------------------------------------------
 # Dependencies → $(SYSROOT). Built by per-dep scripts/build_<dep>.sh sharing
 # scripts/dep_common.sh; all use the same ABI flags (pthreads/exceptions) so
 # they link together. `make deps` runs them in dependency-ordered waves.
 # Full set: zlib fmt imath zstd jpeg png libdeflate robinmap openjph openexr
-#           tbb yamlcpp expat pystring minizip ocio oiio
+#           tbb yamlcpp expat pystring minizip ocio oiio opensubdiv
 # ---------------------------------------------------------------------------
 deps: toolchain
 	bash scripts/build_all_deps.sh

@@ -1,0 +1,55 @@
+diff --git a/source/blender/editors/object/object_edit.cc b/source/blender/editors/object/object_edit.cc
+index d9a8420..5454dfb 100644
+--- a/source/blender/editors/object/object_edit.cc
++++ b/source/blender/editors/object/object_edit.cc
+@@ -2003,6 +2003,39 @@ void OBJECT_OT_shade_auto_smooth(wmOperatorType *ot)
+ /** \name Object Mode Set Operator
+  * \{ */
+ 
++/* WEB BUILD -- see blender/LOCAL_CHANGES.md.
++ *
++ * Hide object modes from the mode dropdown. Deliberately filtered HERE, in the
++ * operator's itemf, and not by editing rna_enum_object_mode_items: the 3D view
++ * header resolves the CURRENT mode with enum_items[object_mode], so dropping an
++ * item from that array would break the header for any object already in that
++ * mode -- and for any .blend saved in one.
++ *
++ * Comma-separated identifiers, default "SCULPT". Changing it needs no rebuild:
++ * BLENDER_WEB_HIDE_MODES="SCULPT,VERTEX_PAINT" (the demo forwards
++ * window.__CAPENV into the environment); set it empty to hide nothing. */
++static bool object_mode_is_hidden(const char *identifier)
++{
++  const char *list = getenv("BLENDER_WEB_HIDE_MODES");
++  if (list == nullptr) {
++    list = "SCULPT";
++  }
++  const size_t id_len = strlen(identifier);
++  for (const char *p = list; *p != '\0';) {
++    const char *end = strchr(p, ',');
++    const size_t len = (end != nullptr) ? size_t(end - p) : strlen(p);
++    /* Length-checked, so "SCULPT" never swallows "SCULPT_CURVES". */
++    if (len == id_len && strncmp(p, identifier, len) == 0) {
++      return true;
++    }
++    if (end == nullptr) {
++      break;
++    }
++    p = end + 1;
++  }
++  return false;
++}
++
+ static const EnumPropertyItem *object_mode_set_itemf(bContext *C,
+                                                      PointerRNA * /*ptr*/,
+                                                      PropertyRNA * /*prop*/,
+@@ -2019,7 +2052,9 @@ static const EnumPropertyItem *object_mode_set_itemf(bContext *C,
+   const Object *ob = CTX_data_active_object(C);
+   if (ob) {
+     while (input->identifier) {
+-      if (mode_compat_test(ob, eObjectMode(input->value))) {
++      if (mode_compat_test(ob, eObjectMode(input->value)) &&
++          !object_mode_is_hidden(input->identifier))
++      {
+         RNA_enum_item_add(&item, &totitem, input);
+       }
+       input++;

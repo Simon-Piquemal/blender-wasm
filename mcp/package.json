@@ -1,0 +1,20 @@
+{
+  "name": "blender-mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP server exposing one Blender tool contract over two adapters: native Blender on a server, or the wasm build in a browser tab.",
+  "bin": {
+    "blender-mcp": "src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "relay": "node src/relay.js",
+    "smoke": "node test/smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  }
+}

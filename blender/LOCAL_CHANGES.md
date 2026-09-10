@@ -602,13 +602,32 @@ Not one text draw is lost. Every one is recorded. The pixels still do not
 arrive, so the loss is after recording: either the pass those draws went into is
 not the one that ends up on screen, or it is overwritten before it gets there.
 
-One more result points the same way, and it is the most useful thing to start
-from. `WGPU_FLUSH_AFTER=text` submits immediately after every matching draw
-instead of letting the encoder batch them. With it, and with the settle repair
-disabled so the defect is visible, the panel comes back about 230 pixels fuller
--- roughly one label -- though the run-to-run spread stays. **The defect responds
-to submit ordering.** That is a property of the batching in the WebGPU backend,
-not of Blender's interface code, and it is where the next attempt belongs.
+Two more theories died the same way, both worth naming so nobody spends the
+afternoon on them again:
+
+- **Stale attachment views.** A region offscreen recreated on resize would leave
+  `WebGPUTexture::attachment_views_` pointing at the old texture, and the text
+  would land in something nobody composites. It cannot happen: `texture_` is
+  only ever assigned at construction, so a resized target is a new object with
+  an empty cache.
+- **A render pass re-begun with Clear**, wiping what was already drawn into the
+  region. `webgpu_framebuffer.cc` counts begins by load op
+  (`blender_web_rp_clear()` / `blender_web_rp_load()`). Across storms the Clear
+  share sits at 16-21 % whether the frame kept its label or lost it -- 16 % on
+  the worst frame measured, 19 % on the best. No correlation.
+
+What DOES respond is submit ordering. `WGPU_FLUSH_AFTER=text` submits
+immediately after every matching draw instead of letting the encoder batch them;
+with it, and the settle repair disabled so the defect is visible, the panel comes
+back about 230 pixels fuller -- roughly one label -- though the run-to-run spread
+stays. **The defect is sensitive to when the encoder is submitted**, which is a
+property of the batching in the WebGPU backend, not of Blender's interface code.
+
+That is the thread to pull, and pulling it means tracing an individual recorded
+draw to the submit that carries it: which encoder, which pass, which submit, and
+whether that submit is the one whose results reach the screen. Everything short
+of that has been tried; the table above is the list, and every entry in it was
+built, measured, and reverted rather than left in.
 
 
 **`bpy.ops.screen.screenshot()` crashes the tab** with `memory access out of

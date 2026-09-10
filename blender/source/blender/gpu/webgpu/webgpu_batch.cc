@@ -406,6 +406,9 @@ volatile int g_web_text_drop_pipeline = 0;
 volatile int g_web_text_drop_nopass = 0;
 volatile int g_web_text_drop_nobg = 0;
 volatile int g_web_text_drop_novertex = 0;
+/* Set from webgpu_framebuffer.cc; see the comment there. */
+volatile int g_web_rp_clear = 0;
+volatile int g_web_rp_load = 0;
 
 extern "C" {
 EMSCRIPTEN_KEEPALIVE int blender_web_text_draw_issued() { return g_web_text_draw_issued; }
@@ -414,6 +417,8 @@ EMSCRIPTEN_KEEPALIVE int blender_web_text_drop_pipeline() { return g_web_text_dr
 EMSCRIPTEN_KEEPALIVE int blender_web_text_drop_nopass() { return g_web_text_drop_nopass; }
 EMSCRIPTEN_KEEPALIVE int blender_web_text_drop_nobg() { return g_web_text_drop_nobg; }
 EMSCRIPTEN_KEEPALIVE int blender_web_text_drop_novertex() { return g_web_text_drop_novertex; }
+EMSCRIPTEN_KEEPALIVE int blender_web_rp_clear() { return g_web_rp_clear; }
+EMSCRIPTEN_KEEPALIVE int blender_web_rp_load() { return g_web_rp_load; }
 }
 
 /* True for the builtin text shader, which is the one drawing every UI label. */

@@ -244,6 +244,24 @@ WGPURenderPassEncoder WebGPUFrameBuffer::begin_render_pass(WGPUCommandEncoder en
       continue;
     }
     ca.view = view;
+    /* Web diagnostic: a pass that re-begins with Clear wipes whatever was
+     * already drawn into that attachment. On a region offscreen mid-frame that
+     * would erase text drawn before the restart, which is one of the two
+     * remaining explanations for the resize text-loss bug -- the other being
+     * that the recorded draws never reach the screen at all. Counted per
+     * outcome so the two can be told apart from JS. */
+#ifdef __EMSCRIPTEN__
+    {
+      extern volatile int g_web_rp_clear;
+      extern volatile int g_web_rp_load;
+      if (color_clear_pending_[i]) {
+        g_web_rp_clear++;
+      }
+      else {
+        g_web_rp_load++;
+      }
+    }
+#endif
     ca.loadOp = color_clear_pending_[i] ? WGPULoadOp_Clear : WGPULoadOp_Load;
     ca.storeOp = WGPUStoreOp_Store;
     ca.clearValue = {clear_color_[i].x, clear_color_[i].y, clear_color_[i].z, clear_color_[i].w};

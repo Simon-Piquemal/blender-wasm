@@ -6,6 +6,7 @@
  * \ingroup gpu
  */
 
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 
@@ -74,7 +75,16 @@ void WebGPUStorageBuf::ensure_buffer()
  * content is overwritten either way). */
 bool WebGPUStorageBuf::cow_if_pass_open(WebGPUContext *ctx)
 {
-  if (!ctx->pass_open() || buffer_ == nullptr) {
+  /* Copy-on-write normally triggers only while a pass or encoder is open, on
+   * the reasoning that anything already submitted has consumed its data. The
+   * resize text-loss defect is sensitive to when the encoder is submitted
+   * (WGPU_FLUSH_AFTER=text recovers about a label's worth of pixels), and the
+   * one buffer every text batch in a frame shares -- BLF's glyph buffer -- is
+   * the obvious thing that reuse could spoil. BLENDER_WEB_ALWAYS_COW=1 gives
+   * every update a fresh buffer so the question can be answered by measurement
+   * instead of argument. Off by default: it allocates per text batch. */
+  static const bool always = getenv("BLENDER_WEB_ALWAYS_COW") != nullptr;
+  if (buffer_ == nullptr || (!always && !ctx->pass_open())) {
     return false;
   }
   WGPUBufferDescriptor desc = {};

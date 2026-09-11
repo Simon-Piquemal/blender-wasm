@@ -12,6 +12,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#ifdef __EMSCRIPTEN__
+#  include <emscripten.h>
+#endif
 #include <cstring>
 
 #include <ft2build.h>
@@ -1501,6 +1504,24 @@ static void blf_texture_draw(const GlyphBLF *g,
   }
 }
 
+#ifdef __EMSCRIPTEN__
+/* Web diagnostic counters for the per-glyph clipping test; see its use below.
+ * Counters rather than log lines: the page console drops lines under load and a
+ * dropped line reads exactly like "this never happened". */
+volatile int g_web_blf_clip_tested = 0;
+volatile int g_web_blf_clip_dropped = 0;
+volatile int g_web_blf_clip_last[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE int blender_web_blf_clip_tested() { return g_web_blf_clip_tested; }
+EMSCRIPTEN_KEEPALIVE int blender_web_blf_clip_dropped() { return g_web_blf_clip_dropped; }
+EMSCRIPTEN_KEEPALIVE int blender_web_blf_clip_last(int i)
+{
+  return (i >= 0 && i < 8) ? g_web_blf_clip_last[i] : 0;
+}
+}
+#endif
+
 void blf_glyph_draw(FontBLF *font, GlyphCacheBLF *gc, GlyphBLF *g, const int x, const int y)
 {
   if ((!g->dims[0]) || (!g->dims[1])) {
@@ -1556,7 +1577,29 @@ void blf_glyph_draw(FontBLF *font, GlyphCacheBLF *gc, GlyphBLF *g, const int x, 
     rcti rect_test;
     blf_glyph_calc_rect_test(g, int(float(x) * xa), int(float(y) * ya), &rect_test);
     BLI_rcti_translate(&rect_test, font->pos[0], font->pos[1]);
+#ifdef __EMSCRIPTEN__
+    g_web_blf_clip_tested++;
+#endif
     if (!BLI_rcti_inside_rcti(&font->clip_rec, &rect_test)) {
+#ifdef __EMSCRIPTEN__
+      /* Web diagnostic: this is the last place a glyph can vanish BEFORE it is
+       * ever queued, and it is invisible to every downstream counter -- the
+       * batch that reaches the GPU is well formed, it simply carries fewer
+       * glyphs. If font->clip_rec is stale after a resize, a whole label is
+       * dropped here one glyph at a time while its widget background, drawn by
+       * another path, still lands. That is exactly the reported signature.
+       * Record the last rejected geometry too: comparing the glyph rect with
+       * the clip rect says whether the clip is stale or simply tight. */
+      g_web_blf_clip_dropped++;
+      g_web_blf_clip_last[0] = rect_test.xmin;
+      g_web_blf_clip_last[1] = rect_test.xmax;
+      g_web_blf_clip_last[2] = rect_test.ymin;
+      g_web_blf_clip_last[3] = rect_test.ymax;
+      g_web_blf_clip_last[4] = font->clip_rec.xmin;
+      g_web_blf_clip_last[5] = font->clip_rec.xmax;
+      g_web_blf_clip_last[6] = font->clip_rec.ymin;
+      g_web_blf_clip_last[7] = font->clip_rec.ymax;
+#endif
       return;
     }
   }

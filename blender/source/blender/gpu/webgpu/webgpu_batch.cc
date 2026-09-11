@@ -297,6 +297,17 @@ static bool to_wgpu_blend(GPUBlend blend, WGPUBlendState &r_bs)
   }
 }
 
+/* Viewport/scissor clamp diagnostics. Counters, not log lines: the page
+ * console drops lines under load and a dropped line reads exactly like "this
+ * never happened".
+ *   collapsed  -- the clamp left nothing to draw into. Before the fix below
+ *                 this silently inherited the previous draw's rect.
+ *   neg_origin -- a rect starting before the attachment, the input that the
+ *                 old clamp arithmetic mishandled. */
+volatile int g_web_vp_collapsed = 0;
+volatile int g_web_sc_collapsed = 0;
+volatile int g_web_rect_neg_origin = 0;
+
 /* Apply the framebuffer's viewport + scissor to the pass (UI region drawing
  * depends on both). GL rects are y-up-from-bottom; WebGPU y-down-from-top. */
 static void apply_viewport_scissor(WGPURenderPassEncoder pass, WebGPUFrameBuffer *fb)
@@ -322,29 +333,70 @@ static void apply_viewport_scissor(WGPURenderPassEncoder pass, WebGPUFrameBuffer
    * straight to the window (e.g. the box-select marquee) below the cursor.
    * Offscreen targets are never present-flipped, so they still need the flip. */
   const bool flip_y = !fb->is_backbuffer();
+  /* Clamp a GL rect into the attachment (WebGPU validates strictly).
+   *
+   * Two things were wrong here, and both failed silently.
+   *
+   * The extent was clamped as `min(ext, size - max(0, org))`, which drops the
+   * part of the rect lying BEFORE the origin without shortening it: a rect at
+   * x = -10 w = 100 became x = 0 w = 100 instead of x = 0 w = 90. Everything
+   * drawn through it was stretched, and because the vertical flip below is
+   * computed from the clamped height, it was displaced too. Negative origins
+   * are ordinary here -- a scrolled panel in the Properties editor produces
+   * them -- so this fired in normal use.
+   *
+   * And when the clamp collapsed the rect to nothing, the call was SKIPPED.
+   * Skipping is not neutral. Render pass state persists, so the draw silently
+   * inherited whatever the previous draw had set -- or, in a pass that had
+   * just been reopened, the full attachment. A draw meant to be invisible
+   * landed somewhere arbitrary; a draw meant to land somewhere precise could
+   * be transformed off the target entirely. Nothing recorded it: the draw is
+   * issued, recorded, dropped by nobody, and paints nothing you can find.
+   *
+   * Setting the degenerate rect explicitly is valid in WebGPU and means what
+   * the clamp says. WGPU_VP_INHERIT=1 restores the old skip for A/B. */
+  static const bool vp_inherit = getenv("WGPU_VP_INHERIT") != nullptr;
+  auto clamp_rect = [&](const int r[4], int &x, int &y, int &w, int &h) {
+    if (r[0] < 0 || r[1] < 0) {
+      g_web_rect_neg_origin++;
+    }
+    x = std::max(0, r[0]);
+    y = std::max(0, r[1]);
+    w = std::max(0, std::min(r[0] + r[2], size.x) - x);
+    h = std::max(0, std::min(r[1] + r[3], size.y) - y);
+    if (flip_y) {
+      y = std::max(0, size.y - y - h);
+    }
+  };
+
   int vp[4];
   fb->viewport_get(vp);
-  if (vp[2] > 0 && vp[3] > 0) {
-    /* Clamp inside the attachment (WebGPU validates strictly). */
-    int x = std::max(0, vp[0]);
-    int w = std::min(vp[2], size.x - x);
-    int y_bottom = std::max(0, vp[1]);
-    int h = std::min(vp[3], size.y - y_bottom);
-    int y = flip_y ? (size.y - y_bottom - h) : y_bottom;
+  {
+    int x, y, w, h;
+    clamp_rect(vp, x, y, w, h);
     if (w > 0 && h > 0) {
       wgpuRenderPassEncoderSetViewport(pass, float(x), float(y), float(w), float(h), 0.0f, 1.0f);
+    }
+    else {
+      g_web_vp_collapsed++;
+      if (!vp_inherit) {
+        wgpuRenderPassEncoderSetViewport(pass, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+      }
     }
   }
   if (fb->scissor_test_get()) {
     int sc[4];
     fb->scissor_get(sc);
-    int x = std::max(0, sc[0]);
-    int w = std::min(sc[2], size.x - x);
-    int y_bottom = std::max(0, sc[1]);
-    int h = std::min(sc[3], size.y - y_bottom);
-    int y = flip_y ? (size.y - y_bottom - h) : y_bottom;
+    int x, y, w, h;
+    clamp_rect(sc, x, y, w, h);
     if (w > 0 && h > 0) {
       wgpuRenderPassEncoderSetScissorRect(pass, uint32_t(x), uint32_t(y), uint32_t(w), uint32_t(h));
+    }
+    else {
+      g_web_sc_collapsed++;
+      if (!vp_inherit) {
+        wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, 0, 0);
+      }
     }
   }
   else {
@@ -412,6 +464,9 @@ volatile int g_web_rp_load = 0;
 
 extern "C" {
 EMSCRIPTEN_KEEPALIVE int blender_web_text_draw_issued() { return g_web_text_draw_issued; }
+EMSCRIPTEN_KEEPALIVE int blender_web_vp_collapsed() { return g_web_vp_collapsed; }
+EMSCRIPTEN_KEEPALIVE int blender_web_sc_collapsed() { return g_web_sc_collapsed; }
+EMSCRIPTEN_KEEPALIVE int blender_web_rect_neg_origin() { return g_web_rect_neg_origin; }
 EMSCRIPTEN_KEEPALIVE int blender_web_text_draw_recorded() { return g_web_text_draw_recorded; }
 EMSCRIPTEN_KEEPALIVE int blender_web_text_drop_pipeline() { return g_web_text_drop_pipeline; }
 EMSCRIPTEN_KEEPALIVE int blender_web_text_drop_nopass() { return g_web_text_drop_nopass; }

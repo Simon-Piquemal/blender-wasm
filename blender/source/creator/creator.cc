@@ -414,8 +414,19 @@ int main(int argc,
             const v = adapter.limits[k];
             if (v !== undefined) requiredLimits[k] = v;
           }
-          Module["preinitializedWebGPUDevice"] =
-              await adapter.requestDevice({ requiredFeatures, requiredLimits });
+          const dev = await adapter.requestDevice({ requiredFeatures, requiredLimits });
+          /* Report device errors. Without this a validation error silently
+           * discards the whole command buffer it belongs to. Use err(), not
+           * console.error: this runs in a worker, and err() is proxied to the
+           * main thread's printErr, which is where WGPU_STATS already lands
+           * and what the test harnesses capture. */
+          dev.addEventListener("uncapturederror", (ev) => {
+            _blender_web_note_device_error();
+            const m = (ev && ev.error && ev.error.message) ? ev.error.message
+                                                           : String(ev && ev.error);
+            (typeof err === "function" ? err : console.error)("WGPU_UNCAPTURED " + m);
+          });
+          Module["preinitializedWebGPUDevice"] = dev;
           _blender_web_device_ready();
         }
         catch (e) {

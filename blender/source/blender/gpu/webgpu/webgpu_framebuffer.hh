@@ -72,6 +72,17 @@ class WebGPUFrameBuffer : public FrameBuffer {
     return is_backbuffer_;
   }
 
+  /* Whether the attachment set changed since this framebuffer was last bound.
+   * render_pass_ensure() identifies an open pass by framebuffer ADDRESS; a
+   * pass whose attachments have been swapped under it is still "the same"
+   * framebuffer and would be reused, recording draws against texture views
+   * that nothing composites any more. `dirty_attachments_` is set by
+   * attachment_set()/attachment_remove() and cleared by bind(). */
+  bool attachments_dirty() const
+  {
+    return dirty_attachments_;
+  }
+
   void bind(bool enabled_srgb) override;
   bool check(char err_out[256]) override;
   void clear(GPUFrameBufferBits buffers,

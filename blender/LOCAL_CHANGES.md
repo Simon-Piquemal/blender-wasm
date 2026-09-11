@@ -534,8 +534,15 @@ measured against the detector, and reverted:
 | bind-group cache aliasing | `WGPU_BG_CACHE_OFF=1` | fails identically, 8/9 |
 | icon preview render interleaving | `BLENDER_WEB_PREVIEW_RENDER=1` vs off | fails either way |
 | atlas upload ordering vs the draw | `GPU_flush()` after the upload | 3/5 either way |
-| text queued past the region's target | `BLF_batch_draw_flush()` at region unbind | 5/5 with, 3/5 without |
+| text queued past the region's target | `BLF_batch_draw_flush()` at region unbind | **void, see below** |
 | first draw at a new size not settled | replay the size event 3 more times | 4/7, unchanged |
+
+That fourth row measured nothing. `BLF_batch_draw_flush()` is
+`if (g_batch.enabled) blf_batch_draw();`, and at region unbind `enabled` is
+already false -- every UI block ends with `BLF_batch_draw_end()`, which flushes
+and clears the flag. The call was a guaranteed no-op, so "5/5 with, 3/5 without"
+is two samples of the same build. Testing that hypothesis for real needs
+`blf_batch_draw()` directly, or just reading `g_batch.glyph_len`.
 
 The single most informative measurement is a control, not a fix. Redraw ONLY the
 3D view after the resize, so the properties region is not re-rendered but merely
@@ -623,11 +630,65 @@ back about 230 pixels fuller -- roughly one label -- though the run-to-run sprea
 stays. **The defect is sensitive to when the encoder is submitted**, which is a
 property of the batching in the WebGPU backend, not of Blender's interface code.
 
-That is the thread to pull, and pulling it means tracing an individual recorded
-draw to the submit that carries it: which encoder, which pass, which submit, and
-whether that submit is the one whose results reach the screen. Everything short
-of that has been tried; the table above is the list, and every entry in it was
-built, measured, and reverted rather than left in.
+Pulling that thread meant reading the backend's state handling around a target
+whose size changes underneath it. Four defects came out of it. Each one is a
+bug on its own terms, independent of whether it turns out to cause this
+symptom, and each is fixed rather than levered:
+
+**1. The viewport/scissor clamp dropped the part of a rect before the origin**
+(`gpu/webgpu/webgpu_batch.cc`, `apply_viewport_scissor`). It computed
+`w = min(ext, size.x - max(0, org))`, so a rect at `x = -10 w = 100` became
+`x = 0 w = 100` instead of `x = 0 w = 90` -- stretched, and displaced too,
+since the y flip is computed from the clamped height. Negative origins are
+ordinary here: a scrolled panel in the Properties editor produces them. Now
+`w = min(org + ext, size.x) - x`.
+
+**2. A collapsed clamp skipped the call entirely** (same function). Skipping is
+not neutral -- render pass state persists, so the draw silently inherited
+whichever rect the previous draw had set, or the whole attachment in a pass
+that had just been reopened. That is a draw which is issued, recorded, dropped
+by nobody, and paints nothing you can find, which is this symptom exactly. It
+now sets the degenerate rect explicitly, which is valid in WebGPU and means
+what the clamp says. `WGPU_VP_INHERIT=1` restores the old skip for A/B, and
+`blender_web_vp_collapsed()` / `blender_web_sc_collapsed()` /
+`blender_web_rect_neg_origin()` say how often either input occurs.
+
+**3. A render pass outlived its own attachments** (`webgpu_context.cc`,
+`render_pass_ensure`). A pass was identified by the framebuffer's ADDRESS, so
+replacing its attachments -- what a resize does -- left the pass open and
+reusable. Draws recorded afterwards went to the OLD texture views: still alive,
+because this backend releases textures and never destroys them, but no longer
+what anyone composites. It now also ends the pass when the attachment set is
+dirty; `blender_web_rp_attach_dirty()` counts it.
+
+**4. `backbuffer_ensure` swapped the backbuffer without submitting**
+(`webgpu_context.cc`). It called `render_pass_end()`, which closes the pass but
+leaves the encoder open, then freed and recreated the backbuffer textures. Any
+draw already recorded against the old views stayed pending and then executed,
+after the swap, into a texture that is no longer presented. It now flushes the
+encoder first.
+
+And the reason none of this ever showed up as an error: **nothing in this build
+listened for device errors.** Not the C++ backend, which never creates the
+device (`emscripten_webgpu_get_device`), and not the page, which creates it in a
+worker where `console.error` reaches no console anyone reads. A WebGPU
+validation error does not fail the offending command -- it invalidates the whole
+command buffer, which the queue then discards, and this backend batches ~90
+passes into one encoder. "No validation errors observed" was never evidence;
+there was no instrument. `creator.cc` now attaches an `uncapturederror`
+listener at the point the device is created, reporting through emscripten's
+`err()` so it lands in the same proxied stream as `WGPU_STATS` rather than in a
+worker realm, and counts into `blender_web_device_errors()`.
+
+One theory died in the process, and it is worth recording because it is
+seductive and wrong. `blf_glyph.cc` frees and recreates the glyph atlas while
+the batch still holds quads that sample it, with no flush -- the guard a few
+lines below exists only for a change of glyph CACHE, not for a reallocation
+within one. That looks exactly like a use-after-free poisoning the command
+buffer. It is not: `~WebGPUTexture` calls `wgpuTextureRelease` and deliberately
+never `wgpuTextureDestroy` (the comment there says why), so the bind group and
+the pass keep the texture alive by refcount and there is no validation error to
+trigger. A release is not a destroy.
 
 
 **`bpy.ops.screen.screenshot()` crashes the tab** with `memory access out of

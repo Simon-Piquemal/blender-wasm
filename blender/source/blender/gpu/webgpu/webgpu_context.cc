@@ -312,10 +312,38 @@ WGPUCommandEncoder WebGPUContext::ensure_encoder()
   return encoder_;
 }
 
+/* Passes ended because the framebuffer's attachment set changed under an open
+ * pass (see render_pass_ensure). */
+volatile int g_web_rp_attach_dirty = 0;
+/* Uncaptured WebGPU device errors. Until now nothing in this build listened for
+ * them -- not the C++ backend, which never creates the device, and not the page,
+ * which creates it in a worker. A validation error does not fail the offending
+ * command: it invalidates the whole command buffer, which the queue discards.
+ * With ~90 passes batched into one encoder that is a frame's worth of drawing
+ * gone with no diagnostic anywhere. "No errors observed" was never evidence;
+ * there was no instrument. */
+volatile int g_web_device_errors = 0;
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE int blender_web_rp_attach_dirty() { return g_web_rp_attach_dirty; }
+EMSCRIPTEN_KEEPALIVE int blender_web_device_errors() { return g_web_device_errors; }
+EMSCRIPTEN_KEEPALIVE void blender_web_note_device_error() { g_web_device_errors++; }
+}
+
 void WebGPUContext::render_pass_ensure(WebGPUFrameBuffer &fb)
 {
+  /* Identity is the framebuffer ADDRESS, so a pass survives its own
+   * attachments being replaced -- exactly what a resize does. Draws recorded
+   * after that point go to the OLD texture views: still alive (this backend
+   * releases textures, never destroys them, so there is no validation error to
+   * notice) but no longer the thing anyone composites. The draw is issued,
+   * recorded, dropped by nobody, and its pixels are in a texture nobody
+   * reads. Treat a changed attachment set as a different target. */
   if (render_pass_ != nullptr && render_pass_fb_ == &fb) {
-    return;
+    if (!fb.attachments_dirty()) {
+      return;
+    }
+    g_web_rp_attach_dirty++;
   }
   if (render_pass_ != nullptr) {
     extern int g_stat_fbswitch;
@@ -1224,6 +1252,12 @@ void WebGPUContext::backbuffer_ensure(int w, int h)
     return;
   }
   render_pass_end();
+  /* Submit before the old backbuffer goes away. render_pass_end() closes the
+   * pass but leaves the encoder open, so draws already recorded against the
+   * OLD backbuffer views stay pending -- and then execute, after the swap,
+   * into a texture that is no longer presented. Releasing (never destroying)
+   * the texture keeps that legal and therefore silent. */
+  flush_encoder();
   if (backbuffer_color_) {
     GPU_texture_free(backbuffer_color_);
     backbuffer_color_ = nullptr;

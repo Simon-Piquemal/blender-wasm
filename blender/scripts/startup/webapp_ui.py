@@ -112,6 +112,11 @@ HIDE_SPLASH = True
 # (Add > Camera) if a still image is ever needed.
 REMOVE_DEFAULT_CAMERA = True
 REMOVE_DEFAULT_LIGHT = True
+# The startup cube goes too. This tool is opened on something -- a product from
+# a link, a dropped folder, a file -- and the cube is never it. It is in the
+# way for a link-opened product (which lands beside it) and it is one more
+# thing to delete for everyone else.
+REMOVE_DEFAULT_CUBE = True
 
 # Light the viewport from the studio HDRI instead of scene lamps: that is what
 # makes deleting the light harmless. The HDRI lights but is never shown --
@@ -258,9 +263,9 @@ def _tune_eevee_memory():
 
 
 def _strip_default_scene():
-    """Delete the startup camera and light -- but only from an unsaved file, so
-    opening a .blend never loses its own objects."""
-    if not (REMOVE_DEFAULT_CAMERA or REMOVE_DEFAULT_LIGHT):
+    """Delete the startup camera, light and cube -- but only from an unsaved
+    file, so opening a .blend never loses its own objects."""
+    if not (REMOVE_DEFAULT_CAMERA or REMOVE_DEFAULT_LIGHT or REMOVE_DEFAULT_CUBE):
         return
     try:
         if bpy.data.filepath:
@@ -271,12 +276,24 @@ def _strip_default_scene():
         if REMOVE_DEFAULT_LIGHT:
             wanted.add('LIGHT')
         doomed = [ob for ob in bpy.data.objects if ob.type in wanted]
+        if REMOVE_DEFAULT_CUBE:
+            # By name, not by type: "every mesh in an unsaved file" would also
+            # delete a product that an earlier startup step imported.
+            #
+            # No position check. An obvious-looking one -- "only if it is still
+            # at the origin" -- silently never fires here, because webapp_floor
+            # sits the startup cube ON the floor and it lives at Z = 1.0. The
+            # unsaved-file guard above is what makes this safe; a file someone
+            # saved with their own object called Cube is already excluded.
+            cube = bpy.data.objects.get("Cube")
+            if cube is not None and cube.type == 'MESH':
+                doomed.append(cube)
         for ob in doomed:
             bpy.data.objects.remove(ob, do_unlink=True)
         if doomed:
             # The object is gone but its datablock lingers with 0 users and
             # would be written back into any saved file.
-            for coll in (bpy.data.cameras, bpy.data.lights):
+            for coll in (bpy.data.cameras, bpy.data.lights, bpy.data.meshes):
                 for data in list(coll):
                     if data.users == 0:
                         coll.remove(data)

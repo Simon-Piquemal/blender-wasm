@@ -3,9 +3,12 @@
 // dev workflow and the Playwright verifier.
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
+import { extname, join, resolve, relative, isAbsolute } from "node:path";
 
-const ROOT = process.argv[2] || process.cwd();
+// Resolved, not as given: join() emits the platform separator, so on Windows a
+// raw `startsWith(ROOT)` containment check compares "demo\dist\..." against
+// "demo/dist" and rejects every request with a 403.
+const ROOT = resolve(process.argv[2] || process.cwd());
 const PORT = Number(process.argv[3] || 8080);
 
 const TYPES = {
@@ -22,8 +25,9 @@ const TYPES = {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
-    let p = normalize(join(ROOT, decodeURIComponent(url.pathname)));
-    if (!p.startsWith(ROOT)) { res.writeHead(403).end(); return; }
+    let p = resolve(join(ROOT, decodeURIComponent(url.pathname)));
+    const rel = relative(ROOT, p);
+    if (rel.startsWith("..") || isAbsolute(rel)) { res.writeHead(403).end(); return; }
     let s = await stat(p).catch(() => null);
     if (s && s.isDirectory()) { p = join(p, "index.html"); s = await stat(p).catch(() => null); }
     if (!s) { res.writeHead(404).end("not found: " + url.pathname); return; }

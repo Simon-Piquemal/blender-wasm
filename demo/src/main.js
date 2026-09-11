@@ -254,10 +254,107 @@ function makeAssetProvider(index) {
 let assetsReady = false;
 let gpuStatus = null; /* { ok, software, fatal, desc, message } once resolved */
 
+/* ---- ?model= : the product this tab was opened for ----------------------
+ *
+ *     <base>?model=<encodeURIComponent(url)>&format=blend|glb
+ *
+ * The tab is opened by another application, one per product, so what it shows
+ * is decided by the link. `format` is carried explicitly rather than sniffed
+ * from the URL because the files have generated names
+ * (model-<jobId>-ultra-<uuid8>.glb) and the choice between "open a scene" and
+ * "import a mesh" has to be made BEFORE anything is downloaded -- putting that
+ * decision in a filename is how it silently becomes wrong.
+ *
+ * Without `model`, everything below is inert and the page behaves exactly as
+ * it did: landing page, Launch button, drag and drop. */
+/* MODEL_MOUNT_POINT is declared next to MOUNT_ROOT further down -- referencing
+ * it here would hit its temporal dead zone during module evaluation. */
+const MODEL_MOUNT = 2;            /* 0 = /assets, 1 = dropped folder */
+
+const modelRequest = (() => {
+  const q = new URLSearchParams(location.search);
+  const url = q.get("model");
+  if (!url) return null;
+  const fmt = (q.get("format") || "").toLowerCase();
+  if (fmt !== "blend" && fmt !== "glb") {
+    return { url, fmt: null,
+             error: fmt ? `unsupported format "${fmt}" (expected blend or glb)`
+                        : "missing &format= (expected blend or glb)" };
+  }
+  /* Keep the real extension: the glTF importer picks its reader from it, and a
+   * .blend opened under the wrong name is a confusing failure later. */
+  let base = "model." + (fmt === "glb" ? "glb" : "blend");
+  try {
+    const last = new URL(url, location.href).pathname.split("/").pop();
+    if (last && /\.(glb|gltf|blend)$/i.test(last)) base = last.replace(/[^\w.\-]/g, "_");
+  } catch (e) { /* not a parseable URL; the fetch below will say so */ }
+  return { url, fmt, base, error: null };
+})();
+
+/* Set when the model cannot be loaded. Falling back to the default scene would
+ * show a plausible, wrong tab -- the product silently absent -- so this blocks
+ * the launch and says why instead. */
+let modelFatal = null;
+
+function failModel(message) {
+  modelFatal = message;
+  console.error("model: " + message);
+  statusEl.textContent = "Could not load the model: " + message;
+  setUiPhase("ready");
+  refreshStartGate();
+}
+
+/* One file, exposed as a read-only FsProvider -- same shape as the asset tar
+ * and the dropped folder, so the ProviderBackend needs nothing new. */
+function makeSingleFileProvider(name, bytes) {
+  return {
+    stat(path) {
+      const p = normalizeAssetPath(path);
+      if (p === name) return { size: bytes.byteLength, isDir: false };
+      if (p === "") return { size: 0, isDir: true };
+      return null;
+    },
+    readdir(path) {
+      if (normalizeAssetPath(path) !== "") {
+        throw new Error("model-fs: no such directory " + path);
+      }
+      return [name];
+    },
+    readFile(path) {
+      if (normalizeAssetPath(path) !== name) {
+        throw new Error("model-fs: no such file " + path);
+      }
+      return bytes;
+    },
+  };
+}
+
+let modelProvider = null;
+
+async function fetchModel(req) {
+  /* This page is cross-origin isolated (COOP/COEP), which SharedArrayBuffer
+   * requires and which also means a cross-origin fetch only succeeds when the
+   * source sends CORS headers -- in dev that is MinIO on :9000. A CORS refusal
+   * arrives here as an opaque TypeError, so say what it actually means. */
+  let rsp;
+  try {
+    rsp = await fetch(req.url, { mode: "cors", credentials: "omit" });
+  } catch (e) {
+    throw new Error(`could not reach ${req.url} — the page is cross-origin ` +
+                    `isolated, so the host must send CORS headers ` +
+                    `(Access-Control-Allow-Origin). Underlying error: ${e && e.message || e}`);
+  }
+  if (!rsp.ok) throw new Error(`${req.url} returned HTTP ${rsp.status}`);
+  const buf = new Uint8Array(await rsp.arrayBuffer());
+  if (buf.byteLength === 0) throw new Error(`${req.url} is empty`);
+  return buf;
+}
+
 function refreshStartGate() {
   /* No hard blocker resolves the button purely on asset readiness; a fatal GPU
-   * problem keeps it disabled; a software fallback needs the ack checkbox. */
-  if (gpuStatus && gpuStatus.fatal) {
+   * problem keeps it disabled; a software fallback needs the ack checkbox; a
+   * model that was asked for and could not be fetched keeps it disabled too. */
+  if ((gpuStatus && gpuStatus.fatal) || modelFatal) {
     startBtn.disabled = true;
     return;
   }
@@ -335,6 +432,25 @@ const [assetsTar, wasmBytes] = await Promise.all([
 ]);
 const assetProvider = makeAssetProvider(indexTar(assetsTar));
 log(`assets indexed zero-copy: ${(assetsTar.length / 1048576) | 0} MB · wasm ${(wasmBytes.length / 1048576) | 0} MB`);
+
+/* The requested product, fetched after the engine so its progress does not
+ * fight the combined bar. A failure here is fatal on purpose (see failModel). */
+if (modelRequest) {
+  if (modelRequest.error) {
+    failModel(modelRequest.error);
+  } else {
+    setProgress({ phase: "downloading", percent: 0, message: "Downloading model" });
+    try {
+      const bytes = await fetchModel(modelRequest);
+      modelProvider = makeSingleFileProvider(modelRequest.base, bytes);
+      log(`model ${modelRequest.base}: ${(bytes.byteLength / 1048576).toFixed(1)} MB ` +
+          `(${modelRequest.fmt})`);
+    } catch (e) {
+      failModel(e && e.message || String(e));
+    }
+  }
+}
+
 setProgress({ phase: "ready", percent: 1, message: "Ready to launch" });
 setUiPhase("ready");
 assetsReady = true;
@@ -455,6 +571,8 @@ window.addEventListener(
  * browser stays hidden until the mount lands; then we call
  * blender_web_file_open_at("/mnt/<folder>") to open it right at the folder. ---- */
 const MOUNT_ROOT = "/mnt";
+/* Where the ?model= file is mounted (see the block near refreshStartGate). */
+const MODEL_MOUNT_POINT = MOUNT_ROOT + "/model";
 
 /* Persist the picked handle where the wasmfs proxy worker can read it back
  * (a dedicated DB so we don't touch the wgsl/files schema). One record per
@@ -813,6 +931,18 @@ window.Module = {
     Module.geckoProviders = { 0: assetProvider };
     ENV.BLENDER_WEB_ASSET_PROVIDER = "1";
 
+    /* The requested model, on mountId 2. Registered here so the provider hooks
+     * can find it; the mount itself is a ccall once the runtime is up (see
+     * onRuntimeInitialized), which is what the dropped-folder path does and
+     * what keeps this a JS-only change. scripts/startup/webapp_model.py reads
+     * these two and opens or imports accordingly. */
+    if (modelProvider) {
+      Module.geckoProviders[MODEL_MOUNT] = modelProvider;
+      ENV.BLENDER_WEB_MODEL = MODEL_MOUNT_POINT + "/" + modelRequest.base;
+      ENV.BLENDER_WEB_MODEL_FORMAT = modelRequest.fmt;
+      log("model will open from " + ENV.BLENDER_WEB_MODEL);
+    }
+
     addRunDependency("wgsl-cache");
     (async () => {
       const db = await idbOpen();
@@ -850,6 +980,23 @@ window.Module = {
       window.Module.ccall("blender_web_set_has_fsaccess", null, ["number"],
                           [window.showDirectoryPicker ? 1 : 0]);
     } catch (e) { log("set_has_fsaccess: " + e); }
+
+    /* Mount the requested model. webapp_model.py waits for this path to appear
+     * rather than assuming an order, because it runs on the Blender thread and
+     * this runs here. */
+    if (modelProvider) {
+      try {
+        const rc = window.Module.ccall("blender_web_mount_provider", "number",
+                                       ["number", "string"],
+                                       [MODEL_MOUNT, MODEL_MOUNT_POINT]);
+        if (rc !== 0) throw new Error("mount returned " + rc);
+        log("model mounted at " + MODEL_MOUNT_POINT);
+      } catch (e) {
+        /* Too late to stop the launch, so make it loud: the tab would
+         * otherwise come up showing the default scene as if nothing happened. */
+        console.error("model: mount failed: " + (e && e.message || e));
+      }
+    }
   },
   onAbort: (w) => { log("ABORT: " + w); status("Failed to start: " + w); },
 };

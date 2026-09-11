@@ -139,23 +139,33 @@ WASMFS_INC="$ROOT/emsdk/upstream/emscripten/system/lib/wasmfs"
 # names alone are tens of MB of pure download with no runtime role; release
 # stack traces become numeric offsets, which is what the dev link
 # (link_blender_web.sh, still -g2) is for.
-# -sINITIAL_MEMORY=512MB (was 1 GB): this heap is COMMITTED at startup, not
-# merely reserved -- the pthread build backs it with a SharedArrayBuffer, and
-# Chrome bills that buffer to every agent that maps it. Measured in-page with
-# performance.measureUserAgentSpecificMemory(): 3311 MB for the tab, as three
-# ~1 GB entries (page + 2 workers). So each MB saved here is saved three times
-# over in what the browser reports. ALLOW_MEMORY_GROWTH stays on, so a scene
-# that genuinely needs more still gets it, at the cost of one growth event.
-# -sPTHREAD_POOL_SIZE=16 (was 32): 32 pre-spawned workers x 4 MB of stack is
-# 128 MB of heap held for threads a browser viewport never runs at once.
-# STRICT=0 keeps the safety net -- past 16, Blender still gets its thread, it
-# is just created on demand instead of coming from the pool.
+# -sINITIAL_MEMORY=256MB (was 512 MB, was 1 GB): this heap is COMMITTED at
+# startup, not merely reserved -- the pthread build backs it with a
+# SharedArrayBuffer, and Chrome bills that buffer to every agent that maps it.
+# Measured in-page with performance.measureUserAgentSpecificMemory(): 3311 MB
+# for the tab, as three ~1 GB entries (page + 2 workers). So each MB saved here
+# is saved three times over in what the browser reports, and that multiplier is
+# the whole reason several product tabs at once ran the machine out of memory.
+#
+# Measured again at 512 MB with a near-empty scene: Module.HEAPU8.byteLength
+# was exactly 512 MB, i.e. Blender never grew it -- the floor was pure
+# reservation, not need. ALLOW_MEMORY_GROWTH stays on, so a scene that
+# genuinely needs more still gets it. Growth is cheap here: growing a SHARED
+# memory is done in place, without the copy that a non-shared heap pays.
+# -sPTHREAD_POOL_SIZE=8 (was 16, was 32): every pre-spawned worker holds its
+# stack for the life of the tab, and a browser viewport never runs 16 of them
+# at once. STRICT=0 keeps the safety net -- past 8, Blender still gets its
+# thread, it is just created on demand instead of coming from the pool.
+# DEFAULT_PTHREAD_STACK_SIZE stays at 4 MB. Halving it saves 16 MB, which is
+# nothing next to the 256 MB above, and it buys a stack overflow in whatever
+# BVH build or mesh task happens to recurse deepest -- an abort that fires
+# under load and points at the wrong code. Not a trade worth making.
 WEB_FLAGS="-pthread \
   -sEXIT_RUNTIME=0 -g0 \
   -O2 \
-  -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=536870912 -sMAXIMUM_MEMORY=4294967296 \
+  -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=268435456 -sMAXIMUM_MEMORY=4294967296 \
   -sSTACK_SIZE=16777216 -sDEFAULT_PTHREAD_STACK_SIZE=4194304 \
-  -sPTHREAD_POOL_SIZE=16 -sPTHREAD_POOL_SIZE_STRICT=0 \
+  -sPTHREAD_POOL_SIZE=8 -sPTHREAD_POOL_SIZE_STRICT=0 \
   -sPROXY_TO_PTHREAD=1 \
   -sOFFSCREENCANVAS_SUPPORT=1 -sOFFSCREENCANVASES_TO_PTHREAD=#canvas -sDEFAULT_LIBRARY_FUNCS_TO_INCLUDE=\\\$GL \
   --use-port=emdawnwebgpu \

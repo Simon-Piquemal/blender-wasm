@@ -22,6 +22,7 @@
 
 #include "GPU_framebuffer.hh"
 #include "GPU_texture.hh"
+#include "GPU_texture_pool.hh"
 
 #include "webgpu_context.hh"
 #include "webgpu_shader.hh"
@@ -312,6 +313,22 @@ WGPUCommandEncoder WebGPUContext::ensure_encoder()
   return encoder_;
 }
 
+/* Set by the page when the tab is hidden; serviced on the Blender thread at the
+ * next present, which is the only place guaranteed to be on the thread that
+ * owns these WebGPU objects. Touching them from the page thread would be a
+ * cross-thread use of handles that belong to the render worker.
+ *
+ * What it hands back is the transient stuff: the texture pool's free list
+ * (render targets kept warm for reuse) and the bind-group cache, which pins a
+ * reference to every buffer, view and sampler it has ever keyed on. Measured at
+ * 151 MB of textures for one idle tab, so this is the difference between a
+ * background product tab costing a little and costing a lot. */
+volatile int g_web_release_gpu_request = 0;
+volatile int g_web_gpu_releases = 0;
+/* Frames presented. See wm.cc's step counter -- this one says whether the GPU
+ * side is idle, that one whether the loop is. */
+volatile int g_web_presents = 0;
+
 /* Passes ended because the framebuffer's attachment set changed under an open
  * pass (see render_pass_ensure). */
 volatile int g_web_rp_attach_dirty = 0;
@@ -326,6 +343,42 @@ volatile int g_web_device_errors = 0;
 
 extern "C" {
 EMSCRIPTEN_KEEPALIVE int blender_web_rp_attach_dirty() { return g_web_rp_attach_dirty; }
+EMSCRIPTEN_KEEPALIVE void blender_web_request_gpu_release() { g_web_release_gpu_request = 1; }
+
+/* Called once per iteration of the window manager's loop (wm.cc), NOT from
+ * present.
+ *
+ * Present was the obvious home for it -- the frame is finished there, nothing
+ * is mid-draw. It does not work: an idle Blender never presents. Measured at
+ * 2281 loop steps over 38 hidden seconds with zero presents, because nothing
+ * had asked to be redrawn, so a request made at that moment simply sat there.
+ * Nudging a redraw to provoke a present does not work either; moving the
+ * pointer over the viewport tags nothing.
+ *
+ * The loop always runs, so that is where this belongs. It is the same thread
+ * that owns these handles, and by the time the loop comes round again the
+ * previous frame has been submitted, so nothing here is freed under a live
+ * pass. */
+void blender_web_service_gpu_release()
+{
+  if (!g_web_release_gpu_request) {
+    return;
+  }
+  WebGPUContext *ctx = static_cast<WebGPUContext *>(Context::get());
+  if (ctx == nullptr) {
+    /* No context on this thread yet -- leave the request pending rather than
+     * dropping it, so it is honoured as soon as there is one. */
+    return;
+  }
+  g_web_release_gpu_request = 0;
+  ctx->clear_bind_group_cache();
+  blender::gpu::TexturePool::get().reset(true);
+  g_web_gpu_releases++;
+  fprintf(stderr, "WGPU_GPU_RELEASE #%d\n", g_web_gpu_releases);
+  fflush(stderr);
+}
+EMSCRIPTEN_KEEPALIVE int blender_web_gpu_releases() { return g_web_gpu_releases; }
+EMSCRIPTEN_KEEPALIVE int blender_web_presents() { return g_web_presents; }
 EMSCRIPTEN_KEEPALIVE int blender_web_device_errors() { return g_web_device_errors; }
 EMSCRIPTEN_KEEPALIVE void blender_web_note_device_error() { g_web_device_errors++; }
 }
@@ -1294,6 +1347,7 @@ static bool g_wgpu_content_signaled = false;
 
 void WebGPUContext::present_backbuffer(int w, int h)
 {
+  g_web_presents++;
   if (device_ == nullptr) {
     return;
   }

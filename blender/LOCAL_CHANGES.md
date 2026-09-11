@@ -460,6 +460,65 @@ instead of a black file that looks like it worked.
 For a picture of the interface, use the backbuffer capture described above: it
 is asynchronous, which is exactly why it works.
 
+## Memory, and several tabs at once
+
+The tool is opened one tab per product, so per-tab cost is multiplied by how
+many products someone is looking at. Everything below was measured in-page, not
+reasoned about.
+
+**The floor was reservation, not need.** `INITIAL_MEMORY` is COMMITTED at
+startup, and in a pthread build it is a SharedArrayBuffer that Chrome bills to
+every agent mapping it (page + workers). At 512 MB, `Module.HEAPU8.byteLength`
+on a near-empty scene read back as exactly 512 MB -- Blender had never grown it,
+so the whole floor was reservation. Dropped to 256 MB with growth left on; the
+same scene now settles at 369-442 MB, i.e. what it actually uses. Growing a
+shared memory happens in place, without the copy a non-shared heap pays, so the
+growth events this adds are cheap.
+
+**The engine bytes were held for the life of the tab.** The decompressed wasm
+(~85 MB) stayed reachable from a module-scope `const` long after
+`WebAssembly.instantiate` had copied the code into the module. Dropping it
+takes the page's JS heap from 126.5 MB to 40 MB. The binding had to become a
+`let`, and the array the destructuring came from had to be emptied, or the old
+reference would have pinned it anyway.
+
+**A hidden tab kept drawing.** The Blender loop runs on a worker pthread, and a
+worker's timers are not stopped the way a document's rAF is: measured 2281 loop
+steps over 38 hidden seconds. `blender_web_set_draw_paused` skips
+`wm_draw_update` while hidden; events still pump, so a resize that happened out
+of sight is known on return.
+
+**And it kept its GPU memory.** `blender_web_request_gpu_release` drops the
+texture pool's free list and the bind-group cache, which pins a reference to
+every buffer, view and sampler it has keyed on -- 151 MB of textures for one
+idle tab. Two things about where this is serviced, both learned the hard way:
+
+- NOT in `present_backbuffer`, the obvious home. An idle Blender never presents
+  (2281 steps, zero presents), so a request made then simply sits forever.
+  Nudging a redraw to force one does not help; a pointer move over the viewport
+  tags nothing.
+- It is serviced in `wm_main_step`, which always runs, on the thread that owns
+  the handles.
+
+The page also applies this **at startup when the tab was born hidden**, because
+that is the common case here: a product tab opened in the background is one that
+loads, renders a full scene and is never looked at until later. Chrome throttles
+such a tab's worker hard -- 3 loop steps across a whole boot -- so the release
+lands a minute or so in rather than immediately. It lands.
+
+Counters, all `EMSCRIPTEN_KEEPALIVE`: `blender_web_steps`,
+`blender_web_presents`, `blender_web_gpu_releases`.
+
+What can NOT be done, so nobody spends time on it: the heap cannot be shared
+between tabs. A SharedArrayBuffer does not cross a browsing context, and the
+WebGPU device is per-agent. Lowering the floor and idling hidden tabs is the
+whole of the available win.
+
+One trade deliberately not taken: `DEFAULT_PTHREAD_STACK_SIZE` stays at 4 MB.
+Halving it saves 16 MB, nothing beside the 256 MB above, and buys a stack
+overflow in whatever BVH build or mesh task recurses deepest -- an abort that
+fires under load and points at the wrong code.
+
 ## Known, still unfixed
 
 ### `scripts/startup/webapp_resize.py` — repaint once a resize settles

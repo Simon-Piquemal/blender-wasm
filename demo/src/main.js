@@ -417,10 +417,11 @@ probeGpu().then(applyGpuStatus).catch(() => {});
 
 /* ---- Download the asset tar + engine wasm CONCURRENTLY (one combined
  * progress bar), then zstd-decompress both. `assetProvider` (the zero-copy tar
- * FsProvider) and `wasmBytes` are consumed when the user clicks Launch. ---- */
+ * FsProvider) and `wasmForInstantiate` are consumed when the user clicks
+ * Launch; the engine bytes are dropped as soon as the module exists. ---- */
 setUiPhase("loading");
 await decoder.init();
-const [assetsTar, wasmBytes] = await Promise.all([
+const downloaded = await Promise.all([
   fetchZst("assets.tar.zst", "assets").then((z) => {
     setProgress({ phase: "decompressing", percent: 1, message: "Decompressing assets" });
     return decoder.decode(z, manifest["assets.tar.zst"]);
@@ -430,8 +431,18 @@ const [assetsTar, wasmBytes] = await Promise.all([
     return decoder.decode(z, manifest["blender.wasm.zst"]);
   }),
 ]);
+const assetsTar = downloaded[0];
+/* The decompressed engine is ~85 MB of JS heap and is dead the moment
+ * WebAssembly.instantiate returns -- the module owns its own copy of the code
+ * from then on. Held in a LET, and the array that also referenced it is
+ * emptied, so that dropping it below actually drops it: a surviving const
+ * binding would pin 85 MB per tab for the life of the session, which is most
+ * of the page's JS heap and is paid again by every product tab opened. */
+let wasmForInstantiate = downloaded[1];
+downloaded.length = 0;
 const assetProvider = makeAssetProvider(indexTar(assetsTar));
-log(`assets indexed zero-copy: ${(assetsTar.length / 1048576) | 0} MB · wasm ${(wasmBytes.length / 1048576) | 0} MB`);
+log(`assets indexed zero-copy: ${(assetsTar.length / 1048576) | 0} MB · ` +
+    `wasm ${(wasmForInstantiate.length / 1048576) | 0} MB`);
 
 /* The requested product, fetched after the engine so its progress does not
  * fight the combined bar. A failure here is fatal on purpose (see failModel). */
@@ -889,7 +900,12 @@ window.Module = {
   print: (t) => { log(t); scan(t); },
   printErr: (t) => { log("[err] " + t); scan(t); },
   instantiateWasm: (imports, cb) => {
-    WebAssembly.instantiate(wasmBytes, imports).then((o) => cb(o.instance, o.module));
+    WebAssembly.instantiate(wasmForInstantiate, imports).then((o) => {
+      /* See the declaration: this is the only remaining reference, and the
+       * bytes have no further use once the module exists. */
+      wasmForInstantiate = null;
+      cb(o.instance, o.module);
+    });
     return {};
   },
   preRun: [function () {
@@ -1006,6 +1022,77 @@ window.Module = {
   s.src = "blender.js";
   document.body.appendChild(s);
 }
+
+/* A backgrounded product tab should cost close to nothing.
+ *
+ * The Blender loop runs on a worker pthread, and a worker's timers are not
+ * stopped the way a document's requestAnimationFrame is, so a hidden tab
+ * otherwise keeps rendering the viewport at full rate. Several product tabs
+ * open at once is the normal way this is used, so that is most of a machine
+ * spent on windows nobody is looking at.
+ *
+ * Pausing stops the drawing only -- events still pump, so a resize that
+ * happened while hidden is known on return. Releasing hands back the transient
+ * GPU memory (texture pool free list and the bind-group cache, measured at
+ * 151 MB for one idle tab); it is serviced on the Blender thread at its next
+ * present, because these handles belong to the render worker. */
+async function applyVisibility() {
+  const M = window.Module;
+  if (!M || !M.ccall) return;
+  try {
+    if (document.visibilityState !== "hidden") {
+      M.ccall("blender_web_set_draw_paused", null, ["number"], [0]);
+      return;
+    }
+    /* Order matters, in two ways that only showed up when measured.
+     *
+     * The release is serviced inside present, and pausing stops presenting --
+     * so pause first and the request is never picked up. Ask first, then pause.
+     *
+     * And an idle Blender does not present AT ALL: measured 2606 loop steps
+     * over 43 hidden seconds with zero presents, because nothing had asked to
+     * be redrawn. Waiting for a present that will never come just burns the
+     * timeout. So nudge one redraw -- a pointer move over the canvas, the same
+     * thing that makes a hovered widget repaint -- and the present that
+     * follows it services the release. */
+    const before = M._blender_web_gpu_releases ? M._blender_web_gpu_releases() : 0;
+    M.ccall("blender_web_request_gpu_release", null, [], []);
+    const c = document.getElementById("canvas");
+    if (c) {
+      const r = c.getBoundingClientRect();
+      c.dispatchEvent(new MouseEvent("mousemove", {
+        clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, bubbles: true }));
+    }
+    for (let i = 0; i < 40; i++) {
+      if (document.visibilityState !== "hidden") return;   /* came back early */
+      if (M._blender_web_gpu_releases && M._blender_web_gpu_releases() > before) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (document.visibilityState === "hidden") {
+      M.ccall("blender_web_set_draw_paused", null, ["number"], [1]);
+    }
+  } catch (e) {
+    log("visibility: " + e);
+  }
+}
+
+document.addEventListener("visibilitychange", () => { void applyVisibility(); });
+/* And once at startup, because a tab can be BORN hidden and then never fire the
+ * event: Phasen opens one of these per product in a background tab, so the
+ * common case is a tab that loads, renders a full scene, and is never looked at
+ * until later. Without this it would hold its GPU memory and keep drawing the
+ * whole time. window.__BGUI__.window is set on the first frame that actually
+ * drew something, which is the earliest point where there is anything to
+ * release. */
+(function pauseIfBornHidden() {
+  let tries = 0;
+  const check = () => {
+    if (document.visibilityState !== "hidden") return;      /* foreground: nothing to do */
+    if (window.__BGUI__ && window.__BGUI__.window) { void applyVisibility(); return; }
+    if (++tries < 600) setTimeout(check, 500);               /* up to 5 min of booting */
+  };
+  setTimeout(check, 500);
+})();
 
 startBtn.onclick = () => { void start(); };
 /* The button's enabled state is driven by refreshStartGate() (asset readiness +

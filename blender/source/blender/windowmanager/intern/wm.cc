@@ -722,9 +722,43 @@ static void wm_step_apply_film_result(bContext *C)
  * request on the proxied-main pthread and opens the file browser at the mount. */
 void wm_web_poll_pending_file_open(bContext *C);
 
+/* Set by the page from visibilitychange. A hidden tab must not keep drawing:
+ * the loop here runs on a worker pthread, and a worker's timers are not stopped
+ * the way a document's requestAnimationFrame is, so without this a backgrounded
+ * product tab carries on rendering the viewport at full rate. With several
+ * product tabs open at once -- which is the normal way this gets used -- that
+ * is most of the machine spent on windows nobody is looking at.
+ *
+ * Events are still pumped while paused. They are nearly free, it keeps the
+ * queue from arriving as one burst when the tab comes back, and it is what lets
+ * the resize that happened while hidden be known on return. Only the drawing,
+ * which is the part that costs, is skipped. */
+static volatile int g_web_draw_paused = 0;
+/* Frames actually stepped. Exported so the page can prove the pause works
+ * rather than assume it: read it, hide the tab, read it again. */
+static volatile int g_web_steps = 0;
+
+extern "C" {
+EMSCRIPTEN_KEEPALIVE void blender_web_set_draw_paused(int paused)
+{
+  g_web_draw_paused = paused ? 1 : 0;
+}
+EMSCRIPTEN_KEEPALIVE int blender_web_steps()
+{
+  return g_web_steps;
+}
+}
+
+/* Hands transient GPU memory back when the page has asked for it (hidden tab).
+ * Lives in the WebGPU backend; declared here because the call has to happen on
+ * this thread, in this loop -- see the comment on the definition. */
+extern "C" void blender_web_service_gpu_release();
+
 static void wm_main_step(void *arg)
 {
   bContext *C = static_cast<bContext *>(arg);
+  g_web_steps++;
+  blender_web_service_gpu_release();
   wm_step_apply_film_result(C);
   wm_web_poll_pending_file_open(C);
   /* Get events from ghost, handle window events, add to window queues. */
@@ -733,6 +767,11 @@ static void wm_main_step(void *arg)
   wm_event_do_handlers(C);
   /* Events have left notes about changes, we handle and cache it. */
   wm_event_do_notifiers(C);
+  if (g_web_draw_paused) {
+    /* Hidden: notifiers above have already tagged whatever changed, so the
+     * redraw simply happens on the first step after the tab comes back. */
+    return;
+  }
   /* Execute cached changes draw. */
   wm_draw_update(C);
   PRF_frame_mark;

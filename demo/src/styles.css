@@ -197,12 +197,25 @@ input {
   display: block;
 }
 
-.logo-x {
-  color: #c4c8cf;
-  font-size: 24px;
-  font-weight: 300;
-  line-height: 1;
-  user-select: none;
+/* One mark now, not a lockup of two -- the separator and the second tile went
+ * with the upstream branding. */
+.loading-note {
+  margin: 0;
+  font-size: 14px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.brand-accent {
+  color: #6b7280;
+  font-weight: 400;
+}
+
+.nav-brand-label {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: #111827;
 }
 
 .splash-title {

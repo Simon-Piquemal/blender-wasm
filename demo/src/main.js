@@ -101,7 +101,7 @@ function renderDownloads() {
   setProgress({
     phase: "downloading", loaded, total,
     percent: total ? loaded / total : undefined,
-    message: "Downloading Blender",
+    message: "Téléchargement du moteur",
   });
 }
 /* Stream `url` with progress into `dl[key]`, return the compressed bytes. */
@@ -299,7 +299,7 @@ let modelFatal = null;
 function failModel(message) {
   modelFatal = message;
   console.error("model: " + message);
-  statusEl.textContent = "Could not load the model: " + message;
+  statusEl.textContent = "Modèle impossible à charger : " + message;
   setUiPhase("ready");
   refreshStartGate();
 }
@@ -350,6 +350,32 @@ async function fetchModel(req) {
   return buf;
 }
 
+/* Loading starts on its own. The tab is opened FOR something -- a product, from
+ * a link -- so a button asking whether to begin is a click that has only one
+ * sensible answer, placed between the user and the thing they came for.
+ *
+ * Three cases still do not start by themselves, and each is a real decision
+ * rather than a formality:
+ *   - no usable WebGPU at all: nothing to start;
+ *   - a software renderer: it works, but "extremely slow" is a cost worth
+ *     agreeing to, so the checkbox and the button stay for this one case;
+ *   - a model that was asked for and could not be fetched: starting would show
+ *     a plausible, wrong scene with the product silently missing.
+ */
+let autoStarted = false;
+
+function maybeAutoStart() {
+  if (autoStarted || startBtn.disabled) return;
+  if (gpuStatus && gpuStatus.software) return;   /* wants an explicit yes */
+  autoStarted = true;
+  /* Deferred by a tick, NOT called straight from here. The gate is reached
+   * while this module is still evaluating, and start() reads bindings declared
+   * further down -- calling it inline threw "Cannot access 'w' before
+   * initialization" and the page sat on the loading screen forever with one
+   * console line to show for it. A tick is enough for the module to finish. */
+  setTimeout(() => { void start(); }, 0);
+}
+
 function refreshStartGate() {
   /* No hard blocker resolves the button purely on asset readiness; a fatal GPU
    * problem keeps it disabled; a software fallback needs the ack checkbox; a
@@ -361,6 +387,7 @@ function refreshStartGate() {
   const needAck = !!(gpuStatus && gpuStatus.software);
   const acked = needAck ? gpuAck.checked : true;
   startBtn.disabled = !assetsReady || !acked;
+  maybeAutoStart();
 }
 
 function applyGpuStatus(s) {
@@ -423,11 +450,11 @@ setUiPhase("loading");
 await decoder.init();
 const downloaded = await Promise.all([
   fetchZst("assets.tar.zst", "assets").then((z) => {
-    setProgress({ phase: "decompressing", percent: 1, message: "Decompressing assets" });
+    setProgress({ phase: "decompressing", percent: 1, message: "Décompression des ressources" });
     return decoder.decode(z, manifest["assets.tar.zst"]);
   }),
   fetchZst("blender.wasm.zst", "wasm").then((z) => {
-    setProgress({ phase: "decompressing", percent: 1, message: "Decompressing Blender" });
+    setProgress({ phase: "decompressing", percent: 1, message: "Décompression du moteur" });
     return decoder.decode(z, manifest["blender.wasm.zst"]);
   }),
 ]);
@@ -450,7 +477,7 @@ if (modelRequest) {
   if (modelRequest.error) {
     failModel(modelRequest.error);
   } else {
-    setProgress({ phase: "downloading", percent: 0, message: "Downloading model" });
+    setProgress({ phase: "downloading", percent: 0, message: "Téléchargement du modèle" });
     try {
       const bytes = await fetchModel(modelRequest);
       modelProvider = makeSingleFileProvider(modelRequest.base, bytes);
@@ -462,7 +489,7 @@ if (modelRequest) {
   }
 }
 
-setProgress({ phase: "ready", percent: 1, message: "Ready to launch" });
+setProgress({ phase: "ready", percent: 1, message: "Démarrage…" });
 setUiPhase("ready");
 assetsReady = true;
 refreshStartGate();
@@ -892,7 +919,21 @@ async function start() {
   }
   setUiPhase("console");
   startBtn.disabled = true;
-  startBtn.textContent = "Starting…";
+  startBtn.textContent = "Démarrage…";
+  if (autoStarted) {
+    /* Nothing started this but the page itself, so there is no button here any
+     * more -- only a disabled one saying what is already obvious. Say it in
+     * text instead and give the space back. */
+    startBtn.hidden = true;
+    const note = document.getElementById("webgpu-note");
+    if (note) {
+      /* That element's default class is the yellow warning style; this is not
+       * a warning. */
+      note.className = "loading-note";
+      note.textContent = "Chargement du moteur 3D…";
+      note.hidden = false;
+    }
+  }
 
 window.Module = {
   arguments: ["--factory-startup", ...(window.__BARGS || [])],
@@ -1017,7 +1058,7 @@ window.Module = {
   onAbort: (w) => { log("ABORT: " + w); status("Failed to start: " + w); },
 };
 
-  log("loading Blender…");
+  log("démarrage du moteur…");
   const s = document.createElement("script");
   s.src = "blender.js";
   document.body.appendChild(s);
@@ -1075,6 +1116,25 @@ async function applyVisibility() {
     log("visibility: " + e);
   }
 }
+
+/* Keep the tab branded. Blender sets the document title itself, from GHOST, as
+ * "<file> - Blender <version>" -- so the rebranded splash was replaced by the
+ * upstream name the moment the engine came up, which is the one place a tab
+ * title is actually read. Rewrite the engine's half, keep the file's. */
+const BRAND = "Phasen 3D";
+(function keepBrandedTitle() {
+  const titleEl = document.querySelector("title");
+  if (!titleEl) return;
+  const fix = () => {
+    const t = document.title;
+    if (!/Blender/i.test(t)) return;
+    const file = t.split(" - ")[0].trim();
+    const next = file && !/^Blender/i.test(file) ? `${file} — ${BRAND}` : BRAND;
+    if (next !== t) document.title = next;
+  };
+  new MutationObserver(fix).observe(titleEl, { childList: true });
+  fix();
+})();
 
 document.addEventListener("visibilitychange", () => { void applyVisibility(); });
 /* And once at startup, because a tab can be BORN hidden and then never fire the

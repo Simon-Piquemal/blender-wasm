@@ -47,6 +47,8 @@
 /demo/public/assets.tar.zst
 /demo/public/manifest.json
 /demo/public/wgsl-cache.json
+# Intermediate: the shipped seed is the .zst beside it.
+/demo/wgsl-cache.json
 /demo/public/wgsl-cache.json.zst
 
 # misc

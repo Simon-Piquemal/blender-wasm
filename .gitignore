@@ -39,7 +39,20 @@
 # release tarball + demo build outputs
 /blender*.tar.gz
 /demo/node_modules/
-/demo/dist/
+# /demo/dist/ N'EST PLUS IGNORE -- c'est devenu l'artefact de deploiement.
+#
+# Construire Blender en wasm demande emsdk et des heures de CPU : aucun builder
+# d'hebergeur ne peut le faire. Le site est donc construit ici et versionne, et
+# l'image de deploiement (cf. Dockerfile, deploy/) ne fait que le servir.
+#
+# Contrepartie assumee : ~33 Mo par version du binaire dans l'historique. Ne
+# recommiter dist/ que lorsqu'il a REELLEMENT change -- pas a chaque commit.
+#
+# assets.tar reste dehors : c'est la version NON compressee de assets.tar.zst,
+# que rien ne va chercher au runtime (demo/src/main.js ne fetch que le .zst).
+# Vite la recopie depuis public/ parce qu'elle y traine ; l'ajouter au depot
+# doublerait le poids pour un fichier jamais servi.
+/demo/dist/assets.tar
 /demo/.stage/
 /demo/public/blender.js
 /demo/public/blender.wasm.zst

@@ -1,0 +1,19 @@
+# Contexte de build — LISTE BLANCHE, et ce n'est pas de la coquetterie.
+#
+# Le dépôt pèse plus de 350 Mo : `blender/` (237 Mo de sources vendorées),
+# `demo/node_modules/` (26 Mo), `demo/public/` (55 Mo de binaires dupliqués avec
+# dist/). Sans ce fichier, Docker transfère tout ça au démon avant même de lire
+# la première instruction — sur un VPS, ce sont des minutes de déploiement et un
+# disque qui se remplit, pour construire une image qui n'a besoin que de 33 Mo.
+#
+# Idiome de la liste blanche : exclure, puis ré-inclure le parent, puis exclure
+# son contenu, puis ré-inclure ce qu'on veut. Le dernier motif qui correspond
+# l'emporte.
+*
+
+!demo
+demo/*
+!demo/dist
+
+!deploy
+!Dockerfile

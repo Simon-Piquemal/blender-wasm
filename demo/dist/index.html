@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Phasen 3D</title>
+    <meta
+      name="description"
+      content="Aperçu et édition 3D dans le navigateur. Ouvre un modèle de produit directement depuis un lien, sans installation."
+    />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="color-scheme" content="light" />
+    <meta name="robots" content="noindex" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Phasen 3D" />
+    <meta property="og:title" content="Phasen 3D" />
+    <meta
+      property="og:description"
+      content="Aperçu et édition 3D dans le navigateur."
+    />
+
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Roboto:wght@100;300;400;500;700;900&display=swap"
+      rel="stylesheet"
+    />
+
+    <script type="module" crossorigin src="./assets/index-CcWcqn9d.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-2hhz9xa9.css">
+  </head>
+  <body>
+    <section id="splash" aria-live="polite">
+      <header class="top-nav">
+        <div class="nav-left">
+          <span class="nav-brand-label">Phasen <span class="brand-accent">3D</span></span>
+        </div>
+        <div class="nav-links">
+          <!-- Blender is GPL: whoever runs this is entitled to the source of
+               the build they are running, so the link stays. -->
+          <a class="nav-link" href="https://github.com/Simon-Piquemal/blender-wasm"
+             target="_blank" rel="noreferrer">Source</a>
+        </div>
+      </header>
+      <main class="stage">
+        <div id="splash-shell" class="stage-inner" data-phase="loading">
+          <div class="logo-lockup">
+            <span class="logo-tile">
+              <svg class="project-logo" viewBox="0 0 48 48" role="img" aria-label="Phasen 3D">
+                <g fill="none" stroke="#111827" stroke-width="2"
+                   stroke-linejoin="round" stroke-linecap="round">
+                  <path d="M24 4 L42 14 L42 34 L24 44 L6 34 L6 14 Z" />
+                  <path d="M24 4 L24 24 L42 14" />
+                  <path d="M24 24 L6 14" />
+                  <path d="M24 24 L24 44" />
+                </g>
+              </svg>
+            </span>
+          </div>
+          <h1 id="project-title" class="splash-title">Phasen <span class="brand-accent">3D</span></h1>
+          <p class="project-copy">
+            Aperçu et édition 3D, directement dans cet onglet.
+          </p>
+
+          <div id="stage-card" class="launch-panel" data-phase="loading">
+            <div class="panel-loading" aria-label="Chargement">
+              <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="progress-fill" class="progress-fill"></div>
+              </div>
+              <div class="progress-meta">
+                <span id="progress-phase">Préparation</span>
+                <span id="progress-percent"></span>
+              </div>
+              <p id="splash-status" class="splash-status">Préparation…</p>
+            </div>
+
+            <div class="panel-ready" aria-label="Démarrer">
+              <button id="start-btn" type="button" class="start-btn">Démarrer quand même</button>
+              <p id="webgpu-note" class="jspi-note" hidden></p>
+            </div>
+
+            <!-- GPU status: populated early (before downloads finish) by the
+                 adapter probe. Shown only when WebGPU is missing or falls back
+                 to a software renderer; the acknowledgement checkbox gates the
+                 Launch button in that case. -->
+            <div id="gpu-warning" class="gpu-warning" hidden>
+              <p id="gpu-warning-text" class="gpu-warning-text"></p>
+              <label id="gpu-ack-row" class="gpu-ack-row" hidden>
+                <input type="checkbox" id="gpu-ack" />
+                <span>Aucun GPU utilisable : le rendu logiciel fonctionne, mais il sera extrêmement lent.</span>
+              </label>
+            </div>
+          </div>
+
+          <section class="startup-console" aria-label="Journal de démarrage">
+            <p class="phase-kicker">Journal de démarrage</p>
+            <div id="console-output" class="console-box" role="log" aria-label="Startup console output"></div>
+          </section>
+        </div>
+      </main>
+    </section>
+    <canvas id="canvas" width="1536" height="864" tabindex="0"></canvas>
+    <!-- Credit badge removed: the running app is meant to read as one tool, not
+         a hosted demo. The .credit-badge rules stay in styles.css, unused. -->
+  </body>
+</html>
